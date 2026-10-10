@@ -1,0 +1,68 @@
+name: factory
+# Kütüphaneleri/runtime'ı bir kez derler, GitHub Release'e koyar. Kullanıcılar sadece indirir.
+on:
+  workflow_dispatch:
+    inputs:
+      py:
+        description: "Python x.y.z"
+        default: "3.13.5"
+  schedule:
+    - cron: "0 3 1 * *"
+
+permissions:
+  contents: write
+
+env:
+  PY_FULL: ${{ inputs.py || '3.13.5' }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    outputs:
+      libs: ${{ steps.l.outputs.libs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: l
+        run: echo "libs=$(python3 factory.py list)" >> "$GITHUB_OUTPUT"
+
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: python factory.py runtime --py "$PY_FULL"
+      - uses: actions/upload-artifact@v4
+        with: { name: runtime, path: dist/runtime }
+
+  wheels:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        lib: ${{ fromJson(needs.setup.outputs.libs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: |
+          pip install "cibuildwheel>=3.1" pip
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - run: python factory.py wheel "${{ matrix.lib }}" --py "$PY_FULL"
+      - uses: actions/upload-artifact@v4
+        with: { name: "lib-${{ matrix.lib }}", path: "dist/${{ matrix.lib }}" }
+
+  publish:
+    needs: [runtime, wheels]
+    if: ${{ !cancelled() && needs.runtime.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - run: python3 factory.py publish --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

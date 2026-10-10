@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyapk"
+version = "0.2.0"
+description = "GUI ile Python -> APK (hazir derlenmis CPython ve kutuphaneler)"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+icon = ["pillow"]
+
+[project.gui-scripts]
+pyapk = "pyapk:main"
+
+[tool.setuptools]
+py-modules = ["pyapk"]
