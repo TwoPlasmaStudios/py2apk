@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: pyapk
-Version: 0.2.0
-Summary: GUI ile Python -> APK (hazir derlenmis CPython ve kutuphaneler)
-Requires-Python: >=3.10
-Provides-Extra: icon
-Requires-Dist: pillow; extra == "icon"

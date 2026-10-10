@@ -1,8 +1,0 @@
-pyapk.py
-pyproject.toml
-pyapk.egg-info/PKG-INFO
-pyapk.egg-info/SOURCES.txt
-pyapk.egg-info/dependency_links.txt
-pyapk.egg-info/entry_points.txt
-pyapk.egg-info/requires.txt
-pyapk.egg-info/top_level.txt
