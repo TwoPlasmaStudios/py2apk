@@ -3,8 +3,8 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyapk"
-version = "0.2.0"
+name = "py2apk"
+version = "0.3.0"
 description = "GUI ile Python -> APK (hazir derlenmis CPython ve kutuphaneler)"
 requires-python = ">=3.10"
 
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 icon = ["pillow"]
 
 [project.gui-scripts]
-pyapk = "pyapk:main"
+py2apk = "py2apk:main"
 
 [tool.setuptools]
-py-modules = ["pyapk"]
+py-modules = ["py2apk"]
