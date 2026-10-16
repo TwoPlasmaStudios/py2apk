@@ -93,19 +93,29 @@ JNIEXPORT void JNICALL Java_pyapk_runtime_MainActivity_nativeRun(JNIEnv *env, jo
 MAIN_JAVA = r'''package pyapk.runtime;
 
 import android.app.Activity;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.*;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.zip.*;
 
 public class MainActivity extends Activity {
     static { System.loadLibrary("@PYLIB@"); System.loadLibrary("pyrunner"); }
     static boolean started;
-    TextView tv; ScrollView sv;
+    TextView tv; ScrollView sv; WebView web;
+    boolean webMode; int port = 5000;
 
     native void nativeRun(String home, String cache);
 
@@ -116,21 +126,65 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        try {
+            ApplicationInfo ai = getPackageManager().getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA);
+            if (ai.metaData != null) {
+                webMode = "webview".equals(String.valueOf(ai.metaData.get("py2apk.mode")));
+                Object p = ai.metaData.get("py2apk.port");
+                if (p != null) port = Integer.parseInt(String.valueOf(p));
+            }
+        } catch (Exception e) { }
         sv = new ScrollView(this); tv = new TextView(this);
         tv.setTypeface(Typeface.MONOSPACE); tv.setTextSize(13); tv.setPadding(24, 64, 24, 24);
         tv.setTextIsSelectable(true);
-        sv.addView(tv); setContentView(sv);
-        if (started) return;
-        started = true;
-        new Thread(null, () -> {
-            try {
-                File home = new File(getFilesDir(), "pyhome");
-                unpack(home);
-                nativeRun(home.getAbsolutePath(), getCacheDir().getAbsolutePath());
-            } catch (Throwable t) {
-                onOutput(android.util.Log.getStackTraceString(t).getBytes());
+        sv.addView(tv);
+        FrameLayout root = new FrameLayout(this);
+        root.addView(sv, new FrameLayout.LayoutParams(-1, -1));
+        if (webMode) {
+            web = new WebView(this);
+            web.setVisibility(View.GONE);
+            WebSettings ws = web.getSettings();
+            ws.setJavaScriptEnabled(true); ws.setDomStorageEnabled(true);
+            web.setWebViewClient(new WebViewClient());
+            web.setWebChromeClient(new WebChromeClient());
+            root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        }
+        setContentView(root);
+        if (!started) {
+            started = true;
+            new Thread(null, () -> {
+                try {
+                    File home = new File(getFilesDir(), "pyhome");
+                    unpack(home);
+                    nativeRun(home.getAbsolutePath(), getCacheDir().getAbsolutePath());
+                } catch (Throwable t) {
+                    onOutput(android.util.Log.getStackTraceString(t).getBytes());
+                }
+            }, "python", 32L << 20).start();
+        }
+        if (webMode) new Thread(this::waitForServer, "py2apk-wait").start();
+    }
+
+    // Python sunucusu portu açınca WebView'ı göster; açılmazsa günlük (hata) ekranda kalır.
+    void waitForServer() {
+        long end = System.currentTimeMillis() + 180000;
+        while (System.currentTimeMillis() < end) {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress("127.0.0.1", port), 400);
+                runOnUiThread(() -> {
+                    sv.setVisibility(View.GONE); web.setVisibility(View.VISIBLE);
+                    web.loadUrl("http://127.0.0.1:" + port + "/");
+                });
+                return;
+            } catch (IOException e) {
+                try { Thread.sleep(400); } catch (InterruptedException ie) { return; }
             }
-        }, "python", 32L << 20).start();
+        }
+    }
+
+    @Override public void onBackPressed() {
+        if (web != null && web.getVisibility() == View.VISIBLE && web.canGoBack()) web.goBack();
+        else super.onBackPressed();
     }
 
     @Override protected void onDestroy() {
@@ -301,7 +355,7 @@ def cmd_wheel(a):
                     shutil.copy(w, out / "wheels" / w.name)
             result["files"] = files
             result["native"] = any("android_" in f for fs in files.values() for f in fs)
-        except Exception as e:
+        except (Exception, SystemExit) as e:  # run() SystemExit atar; yakalanmazsa iş kırmızı biter ve index'e yazılmaz
             result["failed"] = str(e).replace("\n", " ")[:300]
             log(f"BAŞARISIZ {name}: {result['failed']}")
     (out / "result.json").write_text(json.dumps(result))
