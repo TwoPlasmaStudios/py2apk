@@ -5,11 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "py2apk"
 version = "0.3.0"
-description = "GUI ile Python -> APK (hazir derlenmis CPython ve kutuphaneler)"
+description = "Turn a Python script into an Android APK with a GUI - no Docker, no compiling on your machine"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "TwoPlasmaStudios" }]
+keywords = ["android", "apk", "python", "packaging", "flask", "webview", "gui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+]
 
 [project.optional-dependencies]
 icon = ["pillow"]
+
+[project.urls]
+Homepage = "https://github.com/TwoPlasmaStudios/pyapk"
+Issues = "https://github.com/TwoPlasmaStudios/pyapk/issues"
 
 [project.gui-scripts]
 py2apk = "py2apk:main"
