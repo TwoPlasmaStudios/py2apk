@@ -1,5 +1,7 @@
 # py2apk
 
+[Türkçe](README.tr.md)
+
 Turn a Python script into an Android APK, from a simple desktop GUI.
 No Docker, no WSL, no compiler on your machine, and it runs on Windows, macOS and Linux.
 
@@ -150,12 +152,28 @@ Or use *Advanced -> GitHub repository* inside the GUI.
 
 ## Publishing to PyPI (maintainers)
 
+Releases are published by `.github/workflows/publish.yml` with PyPI Trusted Publishing
+(no API token needed). It only runs for tags that start with `v`, so the `cp313` release
+created by the factory never triggers it.
+
+One-time setup:
+
+1. Check that the name is free: https://pypi.org/project/py2apk/ should return 404.
+2. On pypi.org: *Your projects -> Publishing -> Add a new pending publisher* with
+   project `py2apk`, owner `TwoPlasmaStudios`, repository `pyapk`,
+   workflow `publish.yml`, environment `pypi`.
+3. On GitHub: *Settings -> Environments -> New environment* named `pypi`.
+
+Each release: bump `version` in `pyproject.toml`, then
+
 ```
-pip install build twine
-python -m build
-twine upload dist/*
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
-Create an API token at https://pypi.org/manage/account/token/ and use `__token__` as the
-username. Check that the name is free first: https://pypi.org/project/py2apk/ should return 404.
-Remember to add a license file before publishing.
+Manual alternative: `pip install build twine`, `python -m build`, `twine upload dist/*`
+(use an API token, username `__token__`).
+
+## License
+
+MIT. Libraries in the Release keep their own licenses; CPython is under the PSF license.
