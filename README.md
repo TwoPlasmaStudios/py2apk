@@ -38,12 +38,17 @@ pip install py2apk
 Straight from GitHub (works today):
 
 ```
-pip install git+https://github.com/TwoPlasmaStudios/pyapk.git
+pip install git+https://github.com/TwoPlasmaStudios/py2apk.git
 ```
 
 Requirements: Python 3.10+ with tkinter. The Windows and macOS installers from
 python.org include tkinter. On Debian/Ubuntu: `sudo apt install python3-tk`.
 Optional: `pip install py2apk[icon]` (Pillow) to use JPG/WebP logos and get a sharp preview.
+
+**`py2apk` is not recognized?** On Windows, `pip install` often puts the launcher in a `Scripts`
+folder that is not on your PATH. Run it with `python -m py2apk` (or `py -m py2apk`) instead.
+py2apk also offers to add that folder to your PATH the first time the window opens, or you can run
+`python -m py2apk --add-to-path` once and open a new terminal.
 
 ## Use it
 
@@ -71,8 +76,8 @@ fine for testing and sideloading but not for Google Play.
 |---|---|---|
 | **Console** | works | `print()` output is shown on screen. For scripts, bots, calculations. No `input()`. |
 | **Web UI** | works | Run Flask/FastAPI/etc. in your script. The app opens it full screen in a WebView. |
-| **Pygame / Games** | not yet | Needs an SDL2 runtime. |
-| **Kivy** | not yet | Needs an SDL2 runtime. |
+| **Pygame / Games** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
+| **Kivy** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
 
 Tkinter does not exist on Android. Use the **Web UI** type for graphical apps.
 
@@ -130,7 +135,7 @@ Or use *Advanced -> GitHub repository* inside the GUI.
 
 | Variable | Meaning |
 |---|---|
-| `PY2APK_REPO` | GitHub `owner/repo` that hosts the Release (default `TwoPlasmaStudios/pyapk`) |
+| `PY2APK_REPO` | GitHub `owner/repo` that hosts the Release (default `TwoPlasmaStudios/py2apk`) |
 | `PY2APK_HOME` | Cache folder (default `~/.py2apk`) |
 | `PY2APK_PY` | Release tag, i.e. the Python version (default `cp313`) |
 
@@ -146,7 +151,7 @@ Or use *Advanced -> GitHub repository* inside the GUI.
 ## Limitations
 
 * Python 3.13 runtime, arm64-v8a and x86_64 only, minimum Android 7.0 (API 24).
-* No tkinter, pygame or Kivy yet.
+* Pygame and Kivy are still in beta development and cannot be used yet; tkinter does not exist on Android.
 * Console apps have no interactive input.
 * Debug-signed APKs only.
 
@@ -160,7 +165,7 @@ One-time setup:
 
 1. Check that the name is free: https://pypi.org/project/py2apk/ should return 404.
 2. On pypi.org: *Your projects -> Publishing -> Add a new pending publisher* with
-   project `py2apk`, owner `TwoPlasmaStudios`, repository `pyapk`,
+   project `py2apk`, owner `TwoPlasmaStudios`, repository `py2apk`,
    workflow `publish.yml`, environment `pypi`.
 3. On GitHub: *Settings -> Environments -> New environment* named `pypi`.
 
