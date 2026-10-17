@@ -25,10 +25,12 @@ Bilgisayarına yalnızca JDK 17 ve Android build-tools inebilir (yoksa), `~/.py2
 ```
 pip install py2apk
 # ya da doğrudan GitHub'dan
-pip install git+https://github.com/TwoPlasmaStudios/pyapk.git
+pip install git+https://github.com/TwoPlasmaStudios/py2apk.git
 ```
 
 Gereken: tkinter'lı Python 3.10+. Linux'ta: `sudo apt install python3-tk`. İsteğe bağlı: `pip install "py2apk[icon]"` (JPG/WebP logo ve net önizleme).
+
+**`py2apk` komutu bulunamıyor mu?** Windows'ta `pip install` başlatıcıyı çoğu zaman PATH'te olmayan bir `Scripts` klasörüne koyar. Bunun yerine `python -m py2apk` (ya da `py -m py2apk`) çalıştır. Pencere ilk açıldığında py2apk bu klasörü PATH'e eklemeyi kendisi de önerir. Elle yapmak için bir kez `python -m py2apk --add-to-path` çalıştırıp yeni bir terminal aç.
 
 ## Kullanım
 
@@ -46,8 +48,8 @@ Giriş dosyasının yanındaki `.py` dosyaları ve paketler APK'ya otomatik gire
 |---|---|---|
 | **Konsol** | çalışıyor | `print()` çıktısı ekranda görünür. `input()` yok. |
 | **Web arayüzü** | çalışıyor | Flask/FastAPI sunucusu telefonda açılır, arayüz tam ekran WebView'da görünür. |
-| **Pygame / Oyun** | yakında | SDL2 altyapısı gerekir. |
-| **Kivy** | yakında | SDL2 altyapısı gerekir. |
+| **Pygame / Oyun** | beta (geliştiriliyor) | SDL2 altyapısı gerekir, henüz seçilemez. |
+| **Kivy** | beta (geliştiriliyor) | SDL2 altyapısı gerekir, henüz seçilemez. |
 
 Android'de tkinter yoktur. Grafik arayüz için **Web arayüzü** türünü kullan.
 
@@ -84,12 +86,13 @@ Ya da arayüzde *Gelişmiş → GitHub deposu* alanına yaz. Diğer değişkenle
 ## Sorun giderme
 
 - **"Kütüphane dizini alınamadı":** depo public olmalı ve fabrika en az bir kez bitmiş olmalı.
+- **`py2apk` komutu tanınmıyor:** `python -m py2apk` çalıştır (yukarıdaki nota bak).
 - **Uygulama çöküyor:** açarken `adb logcat -s pyapk` çalıştır.
 - **Native kütüphane import hatası:** o paketin henüz Android sürümü yok, arayüzde durumuna bak.
 
 ## Sınırlar
 
-Python 3.13 runtime, yalnızca arm64-v8a ve x86_64, en düşük Android 7.0 (API 24). Pygame, Kivy ve tkinter yok. APK herkese açık debug anahtarıyla imzalanır: test için uygun, Google Play için değil.
+Python 3.13 runtime, yalnızca arm64-v8a ve x86_64, en düşük Android 7.0 (API 24). Pygame ve Kivy hâlâ beta geliştirme aşamasında ve henüz kullanılamaz; tkinter Android'de yoktur. APK herkese açık debug anahtarıyla imzalanır: test için uygun, Google Play için değil.
 
 ## Lisans
 
