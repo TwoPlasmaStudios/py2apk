@@ -16,7 +16,7 @@ from xml.sax.saxutils import quoteattr
 
 _old, _new = Path.home() / ".pyapk", Path.home() / ".py2apk"   # eski önbelleği (JDK/SDK) yeniden indirme
 HOME = Path(os.environ.get("PY2APK_HOME") or (_old if _old.exists() and not _new.exists() else _new))
-REPO = os.environ.get("PY2APK_REPO") or os.environ.get("PYAPK_REPO") or "TwoPlasmaStudios/pyapk"
+REPO = os.environ.get("PY2APK_REPO") or os.environ.get("PYAPK_REPO") or "TwoPlasmaStudios/py2apk"
 PY_TAG = os.environ.get("PY2APK_PY", "cp313")              # release etiketi
 ABIS = ("arm64-v8a", "x86_64")
 BT_VER, PLATFORM, TARGET_SDK, MIN_SDK = "34.0.0", "android-34", 34, 24
@@ -36,8 +36,8 @@ WEB_LIBS = {"flask", "fastapi", "bottle", "django", "quart", "starlette", "uvico
 MODES = [  # (anahtar, başlık, açıklama, destekleniyor)
     ("console", "Konsol", "print() çıktısı ekranda görünür. Betikler, botlar, hesaplamalar.", True),
     ("webview", "Web arayüzü", "Flask / FastAPI + HTML. Uygulama yerel sunucu açar, arayüz tam ekran WebView'da görünür.", True),
-    ("pygame", "Pygame / Oyun", "SDL2 altyapısı gerekir. Henüz desteklenmiyor.", False),
-    ("kivy", "Kivy", "SDL2 altyapısı gerekir. Henüz desteklenmiyor.", False),
+    ("pygame", "Pygame / Oyun", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
+    ("kivy", "Kivy", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
 ]
 
 
@@ -377,6 +377,44 @@ def build_apk(c) -> Path:
     return out
 
 
+
+# --------------------------------------------------------------------------- komut PATH'te değilse otomatik düzelt
+def scripts_dir():
+    """pip'in py2apk başlatıcısını koyduğu klasör (yoksa None)."""
+    try:
+        from importlib import metadata
+        for f in metadata.distribution("py2apk").files or []:
+            if f.name in ("py2apk.exe", "py2apk"):
+                p = Path(f.locate()).resolve().parent
+                if p.exists():
+                    return p
+    except Exception:
+        pass
+    return None
+
+
+def add_to_path(d):
+    """Kullanıcı PATH'ine ekler. Dönüş: (başarılı_mı, mesaj). Yalnızca Windows'ta kayıt defterini değiştirir."""
+    d = str(d)
+    if not WIN:
+        return False, f'Şu satırı kabuk ayar dosyana (~/.profile veya ~/.zshrc) ekle:\n  export PATH="{d}:$PATH"'
+    try:
+        import ctypes, winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                            winreg.KEY_READ | winreg.KEY_WRITE) as k:
+            try:
+                cur, typ = winreg.QueryValueEx(k, "Path")
+            except FileNotFoundError:
+                cur, typ = "", winreg.REG_EXPAND_SZ
+            parts = [p for p in cur.split(";") if p]
+            if d.lower().rstrip("\\") not in [p.lower().rstrip("\\") for p in parts]:
+                parts.append(d)
+                winreg.SetValueEx(k, "Path", 0, typ, ";".join(parts))
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 2, 5000, None)
+        return True, f"Eklendi: {d}\nYeni bir terminal açınca 'py2apk' komutu çalışır."
+    except Exception as e:
+        return False, f"PATH güncellenemedi: {e}"
+
 # --------------------------------------------------------------------------- GUI
 BG, HEAD, CARD, CARD2 = "#0b1220", "#0f1830", "#141c2f", "#18233b"
 FIELD, LINE, FG, MUTED = "#0c1426", "#26334f", "#e6edf7", "#8b9ab3"
@@ -393,6 +431,11 @@ def open_folder(p):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--add-to-path":          # tkinter gerekmez
+        d = scripts_dir()
+        print(add_to_path(d)[1] if d else "py2apk başlatıcısı bulunamadı (pip ile kurulu mu?)")
+        return
     try:
         import tkinter as tk
         from tkinter import filedialog, messagebox, ttk
@@ -404,7 +447,6 @@ def main(argv=None):
             ctypes.windll.shcore.SetProcessDpiAwareness(1)   # net yazı
         except Exception:
             pass
-    argv = sys.argv[1:] if argv is None else argv
 
     class App(tk.Tk):
         def __init__(self):
@@ -422,6 +464,7 @@ def main(argv=None):
             set_log(lambda m: self.q.put(("log", m)))
             self.after(100, self.pump)
             threading.Thread(target=self.load_index, daemon=True).start()
+            self.after(900, self.check_path)
             if argv and Path(argv[0]).is_file():
                 self.script.set(argv[0]); self.on_script()
 
@@ -567,7 +610,7 @@ def main(argv=None):
             t = tk.Label(top, text=title, bg=CARD2, fg=FG if ok else MUTED, font=(UI, 11, "bold"), anchor="w")
             t.pack(side="left")
             if not ok:
-                tk.Label(top, text="YAKINDA", bg=WARN, fg="#1a1300", font=(UI, 7, "bold"), padx=5).pack(side="right")
+                tk.Label(top, text="BETA · YAKINDA", bg=WARN, fg="#1a1300", font=(UI, 7, "bold"), padx=5).pack(side="right")
             d = tk.Label(fr, text=desc, bg=CARD2, fg=MUTED, font=(UI, 9), justify="left", anchor="nw",
                          wraplength=210, height=4)
             d.pack(fill="x", padx=10, pady=(0, 10))
@@ -588,6 +631,20 @@ def main(argv=None):
             else:
                 self.mode_hint.configure(text="Çıktı ekranda metin olarak görünür. Etkileşimli girdi (input) yok.")
                 self.port_row.pack_forget(); self.code_hint.pack_forget()
+
+        def check_path(self):
+            flag = HOME / "path_asked"
+            d = scripts_dir()
+            if shutil.which("py2apk") or flag.exists() or not d:
+                return
+            flag.parent.mkdir(parents=True, exist_ok=True); flag.write_text("1")
+            if WIN:
+                if messagebox.askyesno("py2apk", "Terminalde 'py2apk' komutu bulunamıyor (Python'un Scripts klasörü "
+                                       "PATH'te değil).\n\nBu klasörü şimdi PATH'e ekleyeyim mi?\n" + str(d)):
+                    ok, msg = add_to_path(d)
+                    (messagebox.showinfo if ok else messagebox.showwarning)("py2apk", msg)
+            else:
+                log(add_to_path(d)[1])
 
         # ---- olaylar
         def pick_script(self):
