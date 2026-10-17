@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py2apk"
-version = "0.3.0"
+version = "0.4.0"
 description = "Turn a Python script into an Android APK with a GUI - no Docker, no compiling on your machine"
 readme = "README.md"
 requires-python = ">=3.10"
