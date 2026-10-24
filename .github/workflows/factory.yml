@@ -19,11 +19,11 @@ jobs:
   setup:
     runs-on: ubuntu-24.04
     outputs:
-      libs: ${{ steps.l.outputs.libs }}
+      batches: ${{ steps.l.outputs.batches }}
     steps:
       - uses: actions/checkout@v4
       - id: l
-        run: echo "libs=$(python3 factory.py list)" >> "$GITHUB_OUTPUT"
+        run: echo "batches=$(python3 factory.py list)" >> "$GITHUB_OUTPUT"
 
   runtime:
     runs-on: ubuntu-24.04
@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lib: ${{ fromJson(needs.setup.outputs.libs) }}
+        batch: ${{ fromJson(needs.setup.outputs.batches) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,9 +51,9 @@ jobs:
       - run: |
           pip install "cibuildwheel>=3.1" pip
           rustup target add aarch64-linux-android x86_64-linux-android
-      - run: python factory.py wheel "${{ matrix.lib }}" --py "$PY_FULL"
+      - run: python factory.py wheel "${{ matrix.batch }}" --py "$PY_FULL"
       - uses: actions/upload-artifact@v4
-        with: { name: "lib-${{ matrix.lib }}", path: "dist/${{ matrix.lib }}" }
+        with: { name: "lib-${{ matrix.batch }}", path: "dist/${{ matrix.batch }}" }
 
   publish:
     needs: [runtime, wheels]
