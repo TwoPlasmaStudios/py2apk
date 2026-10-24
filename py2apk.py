@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""py2apk - GUI ile Python -> APK (Windows / macOS / Linux).
+"""py2apk - Terminal arayüzü (TUI) ile Python -> APK (Windows / macOS / Linux).
 
 Kullanıcı tarafında DERLEME YOK: CPython runtime'ı ve kütüphane wheel'leri
 GitHub Releases'e önceden derlenip konmuştur (bkz. factory.py). Bu araç yalnızca
 eksik araçları (JDK, Android build-tools) indirir, hazır parçaları çeker ve APK'yı paketler.
 
-    pip install py2apk   ->   py2apk
+    pip install py2apk
+    py2apk                      # TUI
+    py2apk build main.py ...    # arayüzsüz (CI/otomasyon)
 """
 from __future__ import annotations
 
-import ast, json, os, platform, queue, re, shutil, struct, subprocess, sys, tarfile
+import ast, json, os, platform, re, shutil, struct, subprocess, sys, tarfile
 import threading, traceback, urllib.parse, urllib.request, zipfile, zlib
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
@@ -26,16 +28,31 @@ WIN = SYS == "Windows"
 ARCH = "aarch64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
 EXE, BAT = (".exe", ".bat") if WIN else ("", "")
 
-PIPMAP = {"PIL": "pillow", "cv2": "opencv-python-headless", "yaml": "pyyaml", "bs4": "beautifulsoup4",
-          "sklearn": "scikit-learn", "dateutil": "python-dateutil", "dotenv": "python-dotenv",
-          "OpenSSL": "pyopenssl", "Crypto": "pycryptodome", "serial": "pyserial", "jwt": "pyjwt",
-          "attr": "attrs", "skimage": "scikit-image", "git": "gitpython", "magic": "python-magic"}
-UNSUPPORTED = {"tkinter": "Android'de Tk yok (Web arayüzü türünü kullanın)",
-               "pygame": "pygame için SDL altyapısı henüz yok", "kivy": "kivy için SDL altyapısı henüz yok"}
-WEB_LIBS = {"flask", "fastapi", "bottle", "django", "quart", "starlette", "uvicorn", "waitress"}
+PIPMAP = {  # import adı -> PyPI adı (yalnızca farklı olanlar; '_' ve '-' farkı otomatik çözülür)
+    "PIL": "pillow", "cv2": "opencv-python-headless", "yaml": "pyyaml", "bs4": "beautifulsoup4",
+    "sklearn": "scikit-learn", "dateutil": "python-dateutil", "dotenv": "python-dotenv",
+    "OpenSSL": "pyopenssl", "Crypto": "pycryptodome", "Cryptodome": "pycryptodomex", "serial": "pyserial",
+    "jwt": "pyjwt", "attr": "attrs", "skimage": "scikit-image", "git": "gitpython", "magic": "python-magic",
+    "socks": "pysocks", "telegram": "python-telegram-bot", "discord": "discord.py", "docx": "python-docx",
+    "pptx": "python-pptx", "nacl": "pynacl", "argon2": "argon2-cffi", "slugify": "python-slugify",
+    "socketio": "python-socketio", "paho": "paho-mqtt", "websocket": "websocket-client",
+    "telebot": "pytelegrambotapi", "sdl2": "pysdl2", "OpenGL": "pyopengl", "fitz": "pymupdf",
+    "jose": "python-jose", "zmq": "pyzmq", "yarl": "yarl", "markdown2": "markdown2", "ollama": "ollama"}
+UNSUPPORTED = {
+    "tkinter": "Android'de Tk yok (Web arayüzü türünü kullanın)",
+    "customtkinter": "Android'de Tk yok (Web arayüzü türünü kullanın)",
+    "PyQt5": "Qt bu çalışma zamanıyla Android'de çalışmaz", "PyQt6": "Qt bu çalışma zamanıyla Android'de çalışmaz",
+    "PySide2": "Qt bu çalışma zamanıyla Android'de çalışmaz", "PySide6": "Qt bu çalışma zamanıyla Android'de çalışmaz",
+    "wx": "wxPython Android'de çalışmaz",
+    "pygame": "pygame için SDL altyapısı beta aşamasında, henüz yok",
+    "kivy": "kivy için SDL altyapısı beta aşamasında, henüz yok",
+    "pyglet": "pyglet için pencere/OpenGL altyapısı henüz yok", "arcade": "arcade için pencere altyapısı henüz yok",
+    "sdl2": "SDL2 altyapısı henüz yok", "panda3d": "panda3d için pencere altyapısı henüz yok"}
+WEB_LIBS = {"flask", "fastapi", "bottle", "django", "quart", "starlette", "uvicorn", "waitress", "tornado",
+            "falcon", "cherrypy", "nicegui", "dash", "pywebio", "remi", "streamlit", "gradio", "sanic"}
 MODES = [  # (anahtar, başlık, açıklama, destekleniyor)
     ("console", "Konsol", "print() çıktısı ekranda görünür. Betikler, botlar, hesaplamalar.", True),
-    ("webview", "Web arayüzü", "Flask / FastAPI + HTML. Uygulama yerel sunucu açar, arayüz tam ekran WebView'da görünür.", True),
+    ("webview", "Web arayüzü", "Flask / FastAPI / NiceGUI + HTML. Uygulama yerel sunucu açar, arayüz WebView'da görünür.", True),
     ("pygame", "Pygame / Oyun", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
     ("kivy", "Kivy", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
 ]
@@ -415,14 +432,7 @@ def add_to_path(d):
     except Exception as e:
         return False, f"PATH güncellenemedi: {e}"
 
-# --------------------------------------------------------------------------- GUI
-BG, HEAD, CARD, CARD2 = "#0b1220", "#0f1830", "#141c2f", "#18233b"
-FIELD, LINE, FG, MUTED = "#0c1426", "#26334f", "#e6edf7", "#8b9ab3"
-ACC, OK, WARN, BAD = "#5b8cff", "#34d399", "#fbbf24", "#f87171"
-UI = {"Windows": "Segoe UI", "Darwin": "Helvetica Neue"}.get(SYS, "DejaVu Sans")
-MONO = {"Windows": "Consolas", "Darwin": "Menlo"}.get(SYS, "DejaVu Sans Mono")
-
-
+# --------------------------------------------------------------------------- arayüzsüz (CLI) derleme
 def open_folder(p):
     if WIN:
         os.startfile(p)  # noqa
@@ -430,325 +440,374 @@ def open_folder(p):
         subprocess.run(["open" if SYS == "Darwin" else "xdg-open", str(p)])
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "--add-to-path":          # tkinter gerekmez
-        d = scripts_dir()
-        print(add_to_path(d)[1] if d else "py2apk başlatıcısı bulunamadı (pip ile kurulu mu?)")
-        return
+def build_cli(argv):
+    import argparse
+    ap = argparse.ArgumentParser(prog="py2apk build", description="Arayüzsüz APK derleme (CI / otomasyon).")
+    ap.add_argument("script", help="giriş .py dosyası")
+    ap.add_argument("--name"); ap.add_argument("--package"); ap.add_argument("--icon")
+    ap.add_argument("--version", default="1.0")
+    ap.add_argument("--abi", default="arm64-v8a", help="virgüllü: arm64-v8a,x86_64")
+    ap.add_argument("--mode", choices=["console", "webview"], help="verilmezse web çatısı algılanırsa webview")
+    ap.add_argument("--port", type=int, default=5000)
+    ap.add_argument("--pip", action="append", default=[], help="ek paket (tekrarlanabilir)")
+    ap.add_argument("--repo", default=REPO); ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    set_log(print)
+    src = Path(a.script).resolve()
+    if not src.is_file():
+        sys.exit(f"dosya yok: {src}")
+    detected = detect_libs(collect(src))
+    stem = re.sub(r"[^a-z0-9_]", "_", src.stem.lower()) or "app"
+    cfg = dict(script=str(src), name=a.name or src.stem.replace("_", " ").title(),
+               package=a.package or f"com.py2apk.{stem}", icon=a.icon, version=a.version, vcode=1,
+               abis=[x.strip() for x in a.abi.split(",")], libs=list(dict.fromkeys([*detected, *map(norm, a.pip)])),
+               repo=a.repo, mode=a.mode or ("webview" if WEB_LIBS & set(detected) else "console"),
+               port=a.port, out=a.out)
+    if not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", cfg["package"]):
+        sys.exit("Geçersiz paket adı (örn. com.ben.uygulama)")
     try:
-        import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
+        print(build_apk(cfg))
+    except Fail as e:
+        sys.exit(f"HATA: {e}")
+
+
+# --------------------------------------------------------------------------- TUI (Textual) - her terminalde çalışır
+WEB_HINT = ('import os\napp.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)\n'
+            '# NiceGUI: ui.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), show=False, reload=False)')
+
+TUI_CSS = """
+#body { height: 1fr; }
+#left { width: 1fr; padding: 0 1; }
+#right { width: 1fr; padding: 0 1; }
+.card { border: round $primary; padding: 0 1; margin-bottom: 1; height: auto; }
+.row { height: auto; }
+.row Label { width: 14; height: 3; content-align: left middle; }
+.row Input { width: 1fr; }
+.row Button { width: 12; }
+#libs { height: 11; margin-bottom: 1; }
+#log { height: 1fr; border: round $primary; }
+#webhint { color: $text-muted; padding: 0 1; }
+#bar { height: 5; padding: 1 1 0 1; }
+#build { width: 22; }
+#pb { width: 28; padding-top: 1; }
+#status { width: 1fr; padding: 1 2; }
+PickFile, Confirm { align: center middle; }
+#picker { width: 85%; height: 85%; border: thick $primary; background: $surface; padding: 1; }
+#dialog { width: 64; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
+#dlgbtn { height: auto; margin-top: 1; }
+#dlgbtn Button { margin-right: 2; }
+"""
+
+
+def run_tui(argv):
+    try:
+        from rich.text import Text
+        from textual import on
+        from textual.app import App, ComposeResult
+        from textual.containers import Horizontal, Vertical, VerticalScroll
+        from textual.screen import ModalScreen
+        from textual.widgets import (Button, Checkbox, DataTable, DirectoryTree, Footer, Header, Input, Label,
+                                     ProgressBar, RadioButton, RadioSet, RichLog, Static)
     except ImportError:
-        sys.exit("tkinter bulunamadı. Linux'ta: sudo apt install python3-tk")
-    if WIN:
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)   # net yazı
-        except Exception:
-            pass
+        sys.exit("Textual gerekli: pip install textual   (veya: pip install --upgrade py2apk)")
 
-    class App(tk.Tk):
-        def __init__(self):
+    class FilteredTree(DirectoryTree):
+        exts = ()
+
+        def filter_paths(self, paths):
+            return [p for p in paths if not p.name.startswith(".") and (p.is_dir() or p.suffix.lower() in self.exts)]
+
+    class PickFile(ModalScreen):
+        BINDINGS = [("escape", "cancel", "İptal")]
+
+        def __init__(self, text, exts, start):
             super().__init__()
-            self.title("py2apk"); self.geometry("1100x790"); self.minsize(1000, 720); self.configure(bg=BG)
-            self.q, self.idx, self.detected, self.photo = queue.Queue(), None, [], None
-            self.script, self.name, self.pkg, self.icon = (tk.StringVar() for _ in range(4))
-            self.version, self.extra, self.repo = tk.StringVar(value="1.0"), tk.StringVar(), tk.StringVar(value=REPO)
-            self.port, self.mode, self.status = tk.StringVar(value="5000"), tk.StringVar(value="console"), \
-                tk.StringVar(value="Hazır")
-            self.abi = {a: tk.BooleanVar(value=(a == "arm64-v8a")) for a in ABIS}
-            self.cards = {}
-            self.style_setup(); self.build_ui(); self.set_mode("console")
-            self.extra.trace_add("write", lambda *_: self.refresh())
-            set_log(lambda m: self.q.put(("log", m)))
-            self.after(100, self.pump)
-            threading.Thread(target=self.load_index, daemon=True).start()
-            self.after(900, self.check_path)
-            if argv and Path(argv[0]).is_file():
-                self.script.set(argv[0]); self.on_script()
+            self.msg, self.exts, self.start_dir = text, exts, start
 
-        # ---- görünüm
-        def style_setup(self):
-            s = ttk.Style(self); s.theme_use("clam")
-            s.configure(".", background=BG, foreground=FG, font=(UI, 10))
-            s.configure("T.TEntry", fieldbackground=FIELD, foreground=FG, bordercolor=LINE, lightcolor=LINE,
-                        darkcolor=LINE, insertcolor=FG, padding=7)
-            s.map("T.TEntry", bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
-            s.configure("T.TButton", background=LINE, foreground=FG, borderwidth=0, focusthickness=0, padding=(14, 7))
-            s.map("T.TButton", background=[("active", "#2f3d5e")])
-            s.configure("Accent.TButton", background=ACC, foreground="#ffffff", font=(UI, 12, "bold"),
-                        padding=(18, 12), borderwidth=0, focusthickness=0)
-            s.map("Accent.TButton", background=[("disabled", "#26324d"), ("active", "#7aa2ff")],
-                  foreground=[("disabled", "#7c8aa5")])
-            s.configure("T.Horizontal.TProgressbar", troughcolor=FIELD, background=ACC, bordercolor=BG,
-                        lightcolor=ACC, darkcolor=ACC, thickness=8)
-            s.configure("T.Treeview", background=FIELD, fieldbackground=FIELD, foreground=FG, rowheight=27,
-                        borderwidth=0, font=(UI, 10))
-            s.configure("T.Treeview.Heading", background=CARD2, foreground=MUTED, borderwidth=0, relief="flat",
-                        font=(UI, 9, "bold"))
-            s.map("T.Treeview", background=[("selected", "#22304f")])
-            s.map("T.Treeview.Heading", background=[("active", CARD2)])
-            s.configure("T.TCheckbutton", background=CARD, foreground=FG, font=(UI, 10), focusthickness=0)
-            s.map("T.TCheckbutton", background=[("active", CARD)])
-            s.configure("Vertical.TScrollbar", background=LINE, troughcolor=FIELD, bordercolor=FIELD,
-                        arrowcolor=MUTED, relief="flat")
+        def compose(self) -> ComposeResult:
+            with Vertical(id="picker"):
+                yield Label(f"{self.msg}  (ok tuşları + Enter, Esc: iptal)")
+                tree = FilteredTree(str(self.start_dir), id="tree")
+                tree.exts = self.exts
+                yield tree
 
-        def card(self, parent, step, title):
-            outer = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=LINE)
-            head = tk.Frame(outer, bg=CARD); head.pack(fill="x", padx=16, pady=(14, 8))
-            tk.Label(head, text=str(step), bg=ACC, fg="#fff", font=(UI, 9, "bold"), width=2).pack(side="left")
-            tk.Label(head, text=title, bg=CARD, fg=FG, font=(UI, 11, "bold")).pack(side="left", padx=10)
-            body = tk.Frame(outer, bg=CARD); body.pack(fill="both", expand=True, padx=16, pady=(0, 14))
-            return outer, body
+        def on_directory_tree_file_selected(self, event):
+            event.stop(); self.dismiss(str(event.path))
 
-        def label(self, parent, text, **kw):
-            return tk.Label(parent, text=text, bg=kw.pop("bg", CARD), fg=kw.pop("fg", MUTED),
-                            font=kw.pop("font", (UI, 9)), anchor="w", **kw)
+        def action_cancel(self):
+            self.dismiss(None)
 
-        def field(self, body, row, text, var, browse=None, width=None):
-            self.label(body, text).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-            ttk.Entry(body, textvariable=var, style="T.TEntry", width=width or 30).grid(row=row, column=1,
-                                                                                         sticky="ew", pady=4)
-            if browse:
-                ttk.Button(body, text="Seç…", style="T.TButton", command=browse).grid(row=row, column=2,
-                                                                                         padx=(8, 0))
+    class Confirm(ModalScreen):
+        def __init__(self, text):
+            super().__init__()
+            self.msg = text
 
-        def build_ui(self):
-            hd = tk.Frame(self, bg=HEAD); hd.pack(fill="x")
-            inner = tk.Frame(hd, bg=HEAD); inner.pack(fill="x", padx=24, pady=16)
-            tk.Label(inner, text="py2", bg=HEAD, fg=ACC, font=(UI, 22, "bold")).pack(side="left")
-            tk.Label(inner, text="apk", bg=HEAD, fg=FG, font=(UI, 22, "bold")).pack(side="left")
-            tk.Label(inner, text="Python'u Android uygulamasına çevir", bg=HEAD, fg=MUTED,
-                     font=(UI, 11)).pack(side="left", padx=16, pady=(8, 0))
-            tk.Frame(self, bg=LINE, height=1).pack(fill="x")
+        def compose(self) -> ComposeResult:
+            with Vertical(id="dialog"):
+                yield Label(Text(self.msg))
+                with Horizontal(id="dlgbtn"):
+                    yield Button("Evet", id="yes", variant="success")
+                    yield Button("Hayır", id="no")
 
-            foot = tk.Frame(self, bg=BG); foot.pack(side="bottom", fill="x", padx=20, pady=(6, 16))
-            self.btn = ttk.Button(foot, text="APK OLUŞTUR", style="Accent.TButton", command=self.start)
-            self.btn.pack(side="left")
-            right = tk.Frame(foot, bg=BG); right.pack(side="left", fill="x", expand=True, padx=18)
-            tk.Label(right, textvariable=self.status, bg=BG, fg=MUTED, font=(UI, 9), anchor="w").pack(fill="x")
-            self.pb = ttk.Progressbar(right, mode="indeterminate", style="T.Horizontal.TProgressbar")
-            self.pb.pack(fill="x", pady=(4, 0))
+        def on_button_pressed(self, event):
+            self.dismiss(event.button.id == "yes")
 
-            body = tk.Frame(self, bg=BG); body.pack(fill="both", expand=True, padx=20, pady=16)
-            body.columnconfigure(0, weight=11, uniform="c"); body.columnconfigure(1, weight=9, uniform="c")
-            body.rowconfigure(0, weight=1)
-            left = tk.Frame(body, bg=BG); left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-            rt = tk.Frame(body, bg=BG); rt.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+    class Py2Apk(App):
+        TITLE = "py2apk"
+        SUB_TITLE = "Python → Android APK"
+        CSS = TUI_CSS
+        BINDINGS = [("ctrl+q", "quit", "Çıkış"), ("ctrl+b", "build", "APK oluştur"), ("ctrl+o", "open_out", "Klasörü aç")]
 
-            # 1 kaynak
-            c, b = self.card(left, 1, "Python dosyası"); c.pack(fill="x", pady=(0, 12)); b.columnconfigure(1, weight=1)
-            self.field(b, 0, "Giriş dosyası", self.script, self.pick_script)
+        def __init__(self, preset=None):
+            super().__init__()
+            self.preset, self.idx, self.detected = preset, None, []
+            self.last_script, self.out_path, self.building = "", None, False
 
-            # 2 uygulama bilgisi
-            c, b = self.card(left, 2, "Uygulama"); c.pack(fill="x", pady=(0, 12)); b.columnconfigure(1, weight=1)
-            self.field(b, 0, "Ad", self.name)
-            self.field(b, 1, "Paket adı", self.pkg)
-            self.field(b, 2, "Sürüm", self.version)
-            self.field(b, 3, "Logo", self.icon, self.pick_icon)
-            self.preview = tk.Label(b, text="logo", bg=FIELD, fg=MUTED, width=8, height=4, font=(UI, 8))
-            self.preview.grid(row=0, column=3, rowspan=3, padx=(14, 0), sticky="ne")
+        # ---- düzen
+        def compose(self) -> ComposeResult:
+            yield Header()
+            with Horizontal(id="body"):
+                with VerticalScroll(id="left"):
+                    with Vertical(classes="card", id="c1"):
+                        with Horizontal(classes="row"):
+                            yield Label("Dosya")
+                            yield Input(placeholder="main.py yolu (ya da Gözat)", id="script")
+                            yield Button("Gözat", id="pick_script")
+                    with Vertical(classes="card", id="c2"):
+                        for lab, id_, val in (("Ad", "name", ""), ("Paket adı", "pkg", ""), ("Sürüm", "version", "1.0")):
+                            with Horizontal(classes="row"):
+                                yield Label(lab)
+                                yield Input(value=val, id=id_)
+                        with Horizontal(classes="row"):
+                            yield Label("Logo")
+                            yield Input(placeholder="logo.png (isteğe bağlı)", id="icon")
+                            yield Button("Gözat", id="pick_icon")
+                    with Vertical(classes="card", id="c3"):
+                        with RadioSet(id="mode"):
+                            yield RadioButton("Konsol: print() çıktısı ekranda", value=True, id="m_console")
+                            yield RadioButton("Web arayüzü: Flask / FastAPI / NiceGUI + HTML (WebView)", id="m_web")
+                            yield RadioButton("Pygame / Oyun: BETA, henüz kullanılamaz", id="m_pygame", disabled=True)
+                            yield RadioButton("Kivy: BETA, henüz kullanılamaz", id="m_kivy", disabled=True)
+                        with Horizontal(classes="row", id="portrow"):
+                            yield Label("Sunucu portu")
+                            yield Input(value="5000", id="port")
+                        yield Static(Text(WEB_HINT), id="webhint")
+                with Vertical(id="right"):
+                    with Vertical(classes="card", id="c4"):
+                        yield DataTable(id="libs", zebra_stripes=True, cursor_type="none")
+                        with Horizontal(classes="row"):
+                            yield Label("Ek paketler")
+                            yield Input(placeholder="requests, numpy, ...", id="extra")
+                        with Horizontal(classes="row"):
+                            yield Checkbox("arm64-v8a (telefon)", True, id="abi_arm")
+                            yield Checkbox("x86_64 (emülatör)", False, id="abi_x86")
+                    yield RichLog(id="log", wrap=True, markup=False, highlight=False)
+            with Horizontal(id="bar"):
+                yield Button("APK OLUŞTUR", id="build", variant="primary")
+                yield ProgressBar(id="pb", total=None, show_eta=False)
+                yield Static("Hazır", id="status")
+            yield Footer()
 
-            # 3 uygulama türü
-            c, b = self.card(left, 3, "Uygulama türü"); c.pack(fill="both", expand=True)
-            grid = tk.Frame(b, bg=CARD); grid.pack(fill="x")
-            for i in range(2):
-                grid.columnconfigure(i, weight=1, uniform="m")
-            for n, (key, title, desc, ok) in enumerate(MODES):
-                self.make_card(grid, key, title, desc, ok).grid(row=n // 2, column=n % 2, sticky="nsew",
-                                                                 padx=4, pady=4)
-            self.mode_box = tk.Frame(b, bg=CARD); self.mode_box.pack(fill="x", pady=(8, 0))
-            self.mode_hint = tk.Label(self.mode_box, bg=CARD, fg=MUTED, font=(UI, 9), justify="left",
-                                      anchor="w", wraplength=470)
-            self.mode_hint.pack(fill="x")
-            self.port_row = tk.Frame(self.mode_box, bg=CARD)
-            self.label(self.port_row, "Sunucu portu").pack(side="left")
-            ttk.Entry(self.port_row, textvariable=self.port, style="T.TEntry", width=7).pack(side="left", padx=8)
-            self.code_hint = tk.Label(self.mode_box, bg=FIELD, fg="#b9c7e3", font=(MONO, 9), justify="left",
-                                      anchor="w", padx=10, pady=8,
-                                      text="import os\napp.run(host=\"127.0.0.1\",\n        port=int(os.environ.get(\"PORT\", 5000)),\n        debug=False)")
+        def on_mount(self):
+            for cid, title in (("c1", "1 · Python dosyası"), ("c2", "2 · Uygulama"), ("c3", "3 · Uygulama türü"),
+                               ("c4", "4 · Kütüphaneler")):
+                self.query_one("#" + cid).border_title = title
+            self.query_one("#log").border_title = "Günlük"
+            self.query_one("#libs", DataTable).add_columns("Kütüphane", "Durum")
+            self.query_one("#pb").display = False
+            self.apply_mode("m_console")
+            set_log(self.safe_log)
+            self.run_worker(self.load_index, thread=True)
+            self.set_timer(1.0, self.check_path)
+            if self.preset and Path(self.preset).is_file():
+                self.query_one("#script", Input).value = str(Path(self.preset).resolve())
 
-            # 4 kütüphaneler
-            c, b = self.card(rt, 4, "Kütüphaneler"); c.pack(fill="x", pady=(0, 12))
-            self.tree = ttk.Treeview(b, columns=("lib", "durum"), show="headings", height=5, style="T.Treeview")
-            self.tree.heading("lib", text="Algılanan", anchor="w"); self.tree.heading("durum", text="Durum", anchor="w")
-            self.tree.column("lib", width=150); self.tree.column("durum", width=260)
-            for t, col in (("ok", OK), ("warn", WARN), ("bad", BAD)):
-                self.tree.tag_configure(t, foreground=col)
-            self.tree.pack(fill="x")
-            r = tk.Frame(b, bg=CARD); r.pack(fill="x", pady=(10, 0)); r.columnconfigure(1, weight=1)
-            self.field(r, 0, "Ek paketler", self.extra, width=20)
-            ab = tk.Frame(b, bg=CARD); ab.pack(fill="x", pady=(8, 0))
-            for a, v in self.abi.items():
-                ttk.Checkbutton(ab, text=a + (" · telefon" if a == "arm64-v8a" else " · emülatör"), variable=v,
-                                style="T.TCheckbutton").pack(side="left", padx=(0, 16))
-            adv = tk.Label(b, text="Gelişmiş ▸", bg=CARD, fg=MUTED, font=(UI, 9), cursor="hand2")
-            adv.pack(anchor="w", pady=(8, 0))
-            self.adv_row = tk.Frame(b, bg=CARD); self.adv_row.columnconfigure(1, weight=1)
-            self.field(self.adv_row, 0, "GitHub deposu", self.repo, width=20)
-            adv.bind("<Button-1>", lambda e: (self.adv_row.pack_forget() if self.adv_row.winfo_ismapped()
-                                              else self.adv_row.pack(fill="x")))
-
-            # günlük
-            c, b = self.card(rt, "›", "Günlük"); c.pack(fill="both", expand=True)
-            wrap = tk.Frame(b, bg="#070c16"); wrap.pack(fill="both", expand=True)
-            self.logw = tk.Text(wrap, height=8, state="disabled", bg="#070c16", fg="#c9d4e8", relief="flat",
-                                font=(MONO, 9), wrap="word", padx=10, pady=8, insertbackground=FG,
-                                highlightthickness=0)
-            sb = ttk.Scrollbar(wrap, command=self.logw.yview)
-            self.logw["yscrollcommand"] = sb.set
-            sb.pack(side="right", fill="y"); self.logw.pack(side="left", fill="both", expand=True)
-            self.logw.tag_configure("cmd", foreground="#6b7a99"); self.logw.tag_configure("warn", foreground=WARN)
-            self.logw.tag_configure("good", foreground=OK, font=(MONO, 9, "bold"))
-            self.logw.tag_configure("bad", foreground=BAD)
-
-        def make_card(self, parent, key, title, desc, ok):
-            fr = tk.Frame(parent, bg=CARD2, highlightthickness=2, highlightbackground=LINE,
-                          cursor="hand2" if ok else "arrow")
-            top = tk.Frame(fr, bg=CARD2); top.pack(fill="x", padx=10, pady=(10, 2))
-            t = tk.Label(top, text=title, bg=CARD2, fg=FG if ok else MUTED, font=(UI, 11, "bold"), anchor="w")
-            t.pack(side="left")
-            if not ok:
-                tk.Label(top, text="BETA · YAKINDA", bg=WARN, fg="#1a1300", font=(UI, 7, "bold"), padx=5).pack(side="right")
-            d = tk.Label(fr, text=desc, bg=CARD2, fg=MUTED, font=(UI, 9), justify="left", anchor="nw",
-                         wraplength=210, height=4)
-            d.pack(fill="x", padx=10, pady=(0, 10))
-            if ok:
-                for w in (fr, top, t, d):
-                    w.bind("<Button-1>", lambda e, k=key: self.set_mode(k))
-            self.cards[key] = fr
-            return fr
-
-        def set_mode(self, key):
-            self.mode.set(key)
-            for k, fr in self.cards.items():
-                fr.configure(highlightbackground=ACC if k == key else LINE)
-            if key == "webview":
-                self.mode_hint.configure(text="Kodunuz bir web sunucusu başlatmalı (debug kapalı). "
-                                              "Hazır olunca arayüz uygulamada tam ekran açılır.")
-                self.port_row.pack(anchor="w", pady=(8, 0)); self.code_hint.pack(fill="x", pady=(8, 0))
+        # ---- günlük / durum (her iş parçacığından güvenli)
+        def safe_log(self, m):
+            if threading.current_thread() is threading.main_thread():
+                self.on_log(m)
             else:
-                self.mode_hint.configure(text="Çıktı ekranda metin olarak görünür. Etkileşimli girdi (input) yok.")
-                self.port_row.pack_forget(); self.code_hint.pack_forget()
+                self.call_from_thread(self.on_log, m)
 
+        def on_log(self, m):
+            style = ("dim" if m.startswith("$ ") else "yellow" if m.startswith("UYARI")
+                     else "bold green" if m.startswith("HAZIR") else "")
+            self.query_one("#log", RichLog).write(Text(m, style=style))
+            if m.strip():
+                self.query_one("#status", Static).update(Text(m.strip()[:90]))
+
+        # ---- dizin ve kütüphane tablosu
+        def load_index(self):
+            try:
+                self.idx = fetch_index(REPO)
+            except Fail as e:
+                self.safe_log(f"UYARI: {e}")
+            self.call_from_thread(self.refresh_libs)
+
+        def libs(self):
+            extra = [norm(x) for x in re.split(r"[,\s]+", self.query_one("#extra", Input).value) if x]
+            return list(dict.fromkeys([*self.detected, *extra]))
+
+        def refresh_libs(self):
+            tbl = self.query_one("#libs", DataTable)
+            tbl.clear()
+            for lib in self.libs():
+                st = lib_status(self.idx, lib)
+                tbl.add_row(lib, Text(st, style="green" if st.startswith("✓") else "red" if st.startswith("✗")
+                                      else "yellow"))
+
+        # ---- tür seçimi
+        def apply_mode(self, rid):
+            web = rid == "m_web"
+            self.query_one("#portrow").display = web
+            self.query_one("#webhint").display = web
+
+        def get_mode(self):
+            return "webview" if self.query_one("#mode", RadioSet).pressed_button.id == "m_web" else "console"
+
+        @on(RadioSet.Changed, "#mode")
+        def _mode_changed(self, event):
+            self.apply_mode(event.pressed.id)
+
+        # ---- dosya seçimi / girişler
+        @on(Input.Changed, "#script")
+        def _script_changed(self, event):
+            p = Path(event.value.strip().strip('"'))
+            if p.suffix == ".py" and p.is_file() and str(p) != self.last_script:
+                self.last_script = str(p)
+                self.on_script(p)
+
+        @on(Input.Changed, "#extra")
+        def _extra_changed(self, event):
+            self.refresh_libs()
+
+        def on_script(self, p):
+            stem = re.sub(r"[^a-z0-9_]", "_", p.stem.lower()) or "app"
+            self.query_one("#name", Input).value = p.stem.replace("_", " ").title()
+            self.query_one("#pkg", Input).value = f"com.py2apk.{stem}"
+            try:
+                self.detected = detect_libs(collect(p))
+            except Exception as e:
+                self.detected = []; self.safe_log(f"tarama hatası: {e}")
+            if WEB_LIBS & set(self.detected):
+                self.query_one("#m_web", RadioButton).value = True
+                self.safe_log("Web çatısı algılandı → uygulama türü 'Web arayüzü' seçildi")
+            self.refresh_libs()
+
+        def _start_dir(self):
+            p = Path(self.query_one("#script", Input).value.strip().strip('"'))
+            return p.parent if p.parent.exists() and str(p) else Path.home()
+
+        @on(Button.Pressed, "#pick_script")
+        def _pick_script(self, event):
+            def done(path):
+                if path:
+                    self.query_one("#script", Input).value = path
+            self.push_screen(PickFile("Python dosyası seç", (".py",), self._start_dir()), done)
+
+        @on(Button.Pressed, "#pick_icon")
+        def _pick_icon(self, event):
+            def done(path):
+                if path:
+                    self.query_one("#icon", Input).value = path
+            self.push_screen(PickFile("Logo seç", (".png", ".jpg", ".jpeg", ".webp"), self._start_dir()), done)
+
+        @on(Button.Pressed, "#build")
+        def _build_pressed(self, event):
+            self.action_build()
+
+        # ---- PATH önerisi (yalnızca bir kez)
         def check_path(self):
-            flag = HOME / "path_asked"
-            d = scripts_dir()
+            flag, d = HOME / "path_asked", scripts_dir()
             if shutil.which("py2apk") or flag.exists() or not d:
                 return
             flag.parent.mkdir(parents=True, exist_ok=True); flag.write_text("1")
             if WIN:
-                if messagebox.askyesno("py2apk", "Terminalde 'py2apk' komutu bulunamıyor (Python'un Scripts klasörü "
-                                       "PATH'te değil).\n\nBu klasörü şimdi PATH'e ekleyeyim mi?\n" + str(d)):
-                    ok, msg = add_to_path(d)
-                    (messagebox.showinfo if ok else messagebox.showwarning)("py2apk", msg)
+                def answer(yes):
+                    if yes:
+                        ok, msg = add_to_path(d)
+                        self.notify(msg, severity="information" if ok else "warning", timeout=12)
+                self.push_screen(Confirm("Terminalde 'py2apk' komutu bulunamıyor (Python'un Scripts klasörü PATH'te "
+                                         f"değil).\n\nBu klasör PATH'e eklensin mi?\n{d}"), answer)
             else:
-                log(add_to_path(d)[1])
+                self.safe_log(add_to_path(d)[1])
 
-        # ---- olaylar
-        def pick_script(self):
-            p = filedialog.askopenfilename(title="Python dosyası", filetypes=[("Python", "*.py")])
-            if p:
-                self.script.set(p); self.on_script()
-
-        def pick_icon(self):
-            p = filedialog.askopenfilename(title="Logo", filetypes=[("Resim", "*.png *.jpg *.jpeg *.webp")])
-            if not p:
+        # ---- derleme
+        def action_build(self):
+            if self.building:
                 return
-            self.icon.set(p)
-            try:
-                try:
-                    from PIL import Image, ImageTk
-                    self.photo = ImageTk.PhotoImage(Image.open(p).convert("RGBA").resize((64, 64)))
-                except ImportError:
-                    img = tk.PhotoImage(file=p)
-                    self.photo = img.subsample(max(1, img.width() // 64), max(1, img.height() // 64))
-                self.preview.configure(image=self.photo, text="", width=64, height=64)
-            except Exception:
-                self.preview.configure(image="", text="logo")
+            q = lambda i: self.query_one(i, Input).value.strip()
+            script = q("#script").strip('"')
+            abis = [a for a, w in (("arm64-v8a", "#abi_arm"), ("x86_64", "#abi_x86"))
+                    if self.query_one(w, Checkbox).value]
+            err = None
+            if not Path(script).is_file():
+                err = "Önce bir .py dosyası seçin"
+            elif not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", q("#pkg")):
+                err = "Geçersiz paket adı (örn. com.ben.uygulama)"
+            elif not abis:
+                err = "En az bir mimari seçin"
+            elif not q("#port").isdigit() or not 1024 <= int(q("#port")) <= 65535:
+                err = "Port 1024-65535 arasında olmalı"
+            if err:
+                return self.notify(err, severity="error")
+            cfg = dict(script=script, name=q("#name") or "App", package=q("#pkg"), icon=q("#icon") or None,
+                       version=q("#version") or "1.0", vcode=1, abis=abis, libs=self.libs(), repo=REPO,
+                       mode=self.get_mode(), port=int(q("#port")))
+            self.building = True
+            self.query_one("#build", Button).disabled = True
+            self.query_one("#pb").display = True
+            self.run_worker(lambda: self.do_build(cfg), thread=True)
 
-        def on_script(self):
-            p = Path(self.script.get())
-            stem = re.sub(r"[^a-z0-9_]", "_", p.stem.lower()) or "app"
-            self.name.set(p.stem.replace("_", " ").title()); self.pkg.set(f"com.py2apk.{stem}")
+        def do_build(self, cfg):
             try:
-                self.detected = detect_libs(collect(p))
-            except Exception as e:
-                self.detected = []; log(f"tarama hatası: {e}")
-            if WEB_LIBS & set(self.detected):
-                self.set_mode("webview")
-                log("Web çatısı algılandı → uygulama türü 'Web arayüzü' seçildi")
-            self.refresh()
-
-        def load_index(self):
-            try:
-                self.idx = fetch_index(self.repo.get())
+                out, err = str(build_apk(cfg)), None
             except Fail as e:
-                self.q.put(("log", f"UYARI: {e}"))
-            self.q.put(("refresh", None))
+                out, err = None, str(e)
+            except Exception:
+                out, err = None, traceback.format_exc()
+            self.call_from_thread(self.build_done, out, err)
 
-        def libs(self):
-            extra = [norm(x) for x in re.split(r"[,\s]+", self.extra.get()) if x]
-            return list(dict.fromkeys([*self.detected, *extra]))
+        def build_done(self, out, err):
+            self.building = False
+            self.query_one("#build", Button).disabled = False
+            self.query_one("#pb").display = False
+            if err:
+                self.on_log("HATA: " + err[-1500:])
+                self.query_one("#status", Static).update(Text("Hata, günlüğe bakın", style="red"))
+                self.notify("Derleme başarısız, günlüğe bakın", severity="error", timeout=10)
+            else:
+                self.out_path = out
+                self.query_one("#status", Static).update(Text(f"Tamamlandı: {out}", style="green"))
+                self.notify(f"APK hazır: {out}\nKlasörü açmak için Ctrl+O", timeout=15)
 
-        def refresh(self):
-            self.tree.delete(*self.tree.get_children())
-            for lib in self.libs():
-                st = lib_status(self.idx, lib)
-                self.tree.insert("", "end", values=(lib, st),
-                                 tags=("ok" if st.startswith("✓") else "bad" if st.startswith("✗") else "warn",))
+        def action_open_out(self):
+            if self.out_path:
+                open_folder(Path(self.out_path).parent)
 
-        def start(self):
-            abis = [a for a, v in self.abi.items() if v.get()]
-            if not Path(self.script.get()).is_file():
-                return messagebox.showerror("py2apk", "Önce bir .py dosyası seçin")
-            if not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", self.pkg.get()):
-                return messagebox.showerror("py2apk", "Geçersiz paket adı (örn. com.ben.uygulama)")
-            if not abis:
-                return messagebox.showerror("py2apk", "En az bir mimari seçin")
-            if not self.port.get().isdigit() or not (1024 <= int(self.port.get()) <= 65535):
-                return messagebox.showerror("py2apk", "Port 1024-65535 arasında olmalı")
-            cfg = dict(script=self.script.get(), name=self.name.get() or "App", package=self.pkg.get(),
-                       icon=self.icon.get() or None, version=self.version.get() or "1.0", vcode=1, abis=abis,
-                       libs=self.libs(), repo=self.repo.get(), mode=self.mode.get(), port=int(self.port.get()))
-            self.btn.state(["disabled"]); self.pb.start(12); self.status.set("Başladı…")
+    preset = next((a for a in argv if a.lower().endswith(".py")), None)
+    Py2Apk(preset).run()
 
-            def work():
-                try:
-                    self.q.put(("done", str(build_apk(cfg))))
-                except Fail as e:
-                    self.q.put(("err", str(e)))
-                except Exception:
-                    self.q.put(("err", traceback.format_exc()))
-            threading.Thread(target=work, daemon=True).start()
 
-        def pump(self):
-            try:
-                while True:
-                    kind, val = self.q.get_nowait()
-                    if kind == "log":
-                        tag = ("cmd" if val.startswith("$ ") else "warn" if val.startswith("UYARI")
-                               else "good" if val.startswith("HAZIR") else "")
-                        self.logw.configure(state="normal"); self.logw.insert("end", val + "\n", tag)
-                        self.logw.see("end"); self.logw.configure(state="disabled")
-                        if val.strip():
-                            self.status.set(val.strip()[:100])
-                    elif kind == "refresh":
-                        self.refresh()
-                    else:
-                        self.pb.stop(); self.btn.state(["!disabled"])
-                        if kind == "err":
-                            self.status.set("Hata"); messagebox.showerror("py2apk - hata", val[-1500:])
-                        else:
-                            self.status.set("Tamamlandı ✓")
-                            if messagebox.askyesno("py2apk", f"APK hazır:\n{val}\n\nKlasörü açayım mı?"):
-                                open_folder(Path(val).parent)
-            except queue.Empty:
-                pass
-            self.after(100, self.pump)
+USAGE = """py2apk - Python'u Android APK'sına çevirir
 
-    App().mainloop()
+  py2apk [dosya.py]            terminal arayüzünü (TUI) açar
+  py2apk build dosya.py ...    arayüzsüz derleme (py2apk build -h)
+  py2apk --add-to-path         'py2apk' komutunu PATH'e ekler
+"""
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--add-to-path":
+        d = scripts_dir()
+        print(add_to_path(d)[1] if d else "py2apk başlatıcısı bulunamadı (pip ile kurulu mu?)")
+    elif argv and argv[0] == "build":
+        build_cli(argv[1:])
+    elif argv and argv[0] in ("-h", "--help"):
+        print(USAGE)
+    else:
+        run_tui(argv)
 
 
 if __name__ == "__main__":
