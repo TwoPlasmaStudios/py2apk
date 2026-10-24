@@ -3,7 +3,7 @@
 
   python factory.py list                         -> kütüphane listesi (JSON, matrix için)
   python factory.py runtime --py 3.13.5          -> Android CPython + JNI çalıştırıcı + classes.dex
-  python factory.py wheel flask --py 3.13        -> bir kütüphanenin (+bağımlılıkların) Android wheel'leri
+  python factory.py wheel light-01 --py 3.13     -> bir iş grubunun kütüphaneleri (+bağımlılıkların) Android wheel'leri
   python factory.py publish --repo OWNER/REPO    -> index.json üretir, GitHub Release'e yükler
 
 Strateji (wheel): önce PyPI + Chaquopy dizininde hazır Android/saf-Python wheel aranır;
@@ -14,11 +14,62 @@ from __future__ import annotations
 import argparse, json, os, re, shutil, subprocess, sys, tarfile, tempfile, time, urllib.request, zipfile
 from pathlib import Path
 
-LIBS = ["flask", "requests", "numpy", "pandas", "pillow", "matplotlib", "scipy", "scikit-learn",
-        "opencv-python-headless", "cryptography", "lxml", "pyyaml", "aiohttp", "sqlalchemy",
-        "beautifulsoup4", "pydantic", "fastapi", "httpx", "psutil", "pygame"]
+# Kategoriler -> PyPI adları. Her biri için Android (veya saf Python) wheel kapanışı çözülür.
+CATEGORIES = {
+    "Web / sunucu": ["flask", "django", "fastapi", "starlette", "uvicorn", "bottle", "quart", "tornado", "aiohttp",
+                     "falcon", "cherrypy", "waitress", "werkzeug", "jinja2", "requests", "httpx", "websockets",
+                     "python-socketio", "flask-socketio", "flask-cors", "flask-sqlalchemy", "flask-login",
+                     "flask-wtf", "nicegui", "dash", "pywebio", "remi", "streamlit", "gradio", "websocket-client"],
+    "GUI / oyun": ["pygame", "pygame-ce", "kivy", "kivymd", "pyglet", "arcade", "pysdl2", "pymunk", "pygame-gui",
+                   "pgzero", "raylib", "moderngl", "pyopengl", "panda3d", "ursina", "flet"],
+    "Minecraft / bot / sosyal": ["minecraft-launcher-lib", "mcstatus", "nbtlib", "mcrcon", "discord.py",
+                                 "python-telegram-bot", "aiogram", "pytelegrambotapi", "slack-sdk", "tweepy", "praw"],
+    "Ağ / donanım": ["paho-mqtt", "dnspython", "paramiko", "pysocks", "aiofiles", "httpcore", "pyserial", "scapy",
+                     "zeroconf", "ping3"],
+    "Veri / bilim / görüntü": ["numpy", "pandas", "scipy", "scikit-learn", "matplotlib", "seaborn", "plotly", "sympy",
+                               "networkx", "statsmodels", "scikit-image", "bokeh", "openpyxl", "xlsxwriter", "xlrd",
+                               "polars", "tabulate", "pillow", "opencv-python-headless", "imageio"],
+    "Metin / ayrıştırma": ["beautifulsoup4", "lxml", "html5lib", "pyyaml", "tomlkit", "python-dotenv", "jsonschema",
+                           "markdown", "mistune", "pygments", "docutils", "rich", "tqdm", "colorama", "click", "typer",
+                           "loguru", "pyfiglet", "prompt-toolkit", "regex", "python-dateutil", "pytz", "tzdata",
+                           "arrow", "babel", "unidecode", "emoji", "jmespath", "xmltodict", "feedparser",
+                           "markdownify"],
+    "Veritabanı": ["sqlalchemy", "alembic", "peewee", "tinydb", "pymongo", "redis", "aiosqlite", "sqlmodel"],
+    "Güvenlik": ["cryptography", "pycryptodome", "bcrypt", "pynacl", "pyjwt", "passlib", "argon2-cffi", "pyotp",
+                 "itsdangerous", "oauthlib", "authlib"],
+    "Yardımcı": ["attrs", "pydantic", "marshmallow", "orjson", "ujson", "msgpack", "cachetools", "tenacity",
+                 "more-itertools", "toolz", "schedule", "apscheduler", "psutil", "python-slugify", "shortuuid",
+                 "qrcode", "faker", "humanize", "pint", "filelock", "platformdirs", "packaging", "six"],
+    "Belge / medya": ["reportlab", "fpdf2", "pypdf", "python-docx", "python-pptx", "mutagen", "gtts"],
+    "Yapay zeka": ["openai", "anthropic", "ollama", "huggingface-hub", "tokenizers", "google-generativeai"],
+}
 BASE = ["certifi"]  # her APK'ya girer (https sertifikaları)
-SKIP = {"pygame": "SDL2 + SDLActivity gerekir, TextView çalıştırıcıyla çalışmaz (henüz yok)"}
+ALL = list(dict.fromkeys([n for v in CATEGORIES.values() for n in v] + BASE))
+# Kaynaktan ASLA derlenmeyenler: yalnızca hazır Android/saf-Python wheel varsa alınır (yoksa "başarısız" yazılır).
+# Pencere/SDL gerektirenler, Rust/gRPC/Arrow gibi ağır zincirler, bu çalışma zamanında anlamsız ya da çok pahalı.
+GUI_NATIVE = {"pygame", "pygame-ce", "kivy", "pysdl2", "panda3d", "ursina", "raylib", "moderngl", "arcade", "flet",
+              "pymunk", "pyglet"}
+NO_BUILD = GUI_NATIVE | {"polars", "tokenizers", "google-generativeai", "pymongo", "streamlit", "gradio",
+                         "huggingface-hub", "pgzero", "pygame-gui", "kivymd"}
+GUI_NOTE = "SDL2/pencere altyapısı henüz yok (beta). Android wheel bulunamadı: "
+# Ağır (kaynaktan derleme ihtimali olan) kütüphaneler tek başına bir iş olur; kalanlar 10'arlı gruplanır.
+HEAVY = {"numpy", "pandas", "scipy", "scikit-learn", "matplotlib", "pillow", "opencv-python-headless", "cryptography",
+         "lxml", "pydantic", "psutil", "scikit-image", "statsmodels", "bcrypt", "pynacl", "pycryptodome", "orjson",
+         "msgpack", "pyyaml", "seaborn", "bokeh"}
+
+
+def norm(n):
+    return re.sub(r"[-_.]+", "-", n).lower()
+
+
+def batches():
+    out = {f"heavy-{n}": [n] for n in ALL if n in HEAVY}
+    light = [n for n in ALL if n not in HEAVY]
+    for k in range(0, len(light), 10):
+        out[f"light-{k // 10 + 1:02d}"] = light[k:k + 10]
+    return out
+
+
 ABIS = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-linux-android"}
 API = 24
 BT, PLAT = "34.0.0", "android-34"
@@ -323,7 +374,7 @@ def build_from_sdist(pkg, built, tag):
     run([sys.executable, "-m", "cibuildwheel", "--platform", "android", "--output-dir", built, pkgdir], env=env)
 
 
-def resolve(name, abi, xy, dest, built, tag, tried):
+def resolve(name, abi, xy, dest, built, tag, tried, allow_build=True):
     for _ in range(10):
         p = subprocess.run(pip_cmd(name, abi, xy, dest, built), capture_output=True, text=True)
         if p.returncode == 0:
@@ -332,35 +383,42 @@ def resolve(name, abi, xy, dest, built, tag, tried):
              or re.search(r"satisfies the requirement ([A-Za-z0-9_.\-]+)", p.stderr))
         if not m or m.group(1).lower() in tried:
             raise RuntimeError(p.stderr.strip()[-500:])
+        if not allow_build:
+            raise RuntimeError(f"hazır Android wheel yok: {m.group(1)}")
         tried.add(m.group(1).lower())
         build_from_sdist(m.group(1), built, tag)
     raise RuntimeError("çözümleme döngüsü bitmedi")
 
 
-def cmd_wheel(a):
-    name = a.name; xy, _, tag = tags(a.py)
-    out = Path(a.out) / name; shutil.rmtree(out, ignore_errors=True)
+def wheel_one(name, xy, tag, out):
+    out = Path(out) / name; shutil.rmtree(out, ignore_errors=True)
     (out / "wheels").mkdir(parents=True)
     result = {"name": name}
-    if name in SKIP:
-        result["failed"] = SKIP[name]
-    else:
-        built = out / "built"; built.mkdir(); tried = set(); files = {}
-        try:
-            for abi in ABIS:
-                dest = out / "dl" / abi; dest.mkdir(parents=True)
-                resolve(name, abi, xy, dest, built, tag, tried)
-                files[abi] = sorted(p.name for p in dest.glob("*.whl"))
-                for w in dest.glob("*.whl"):
-                    shutil.copy(w, out / "wheels" / w.name)
-            result["files"] = files
-            result["native"] = any("android_" in f for fs in files.values() for f in fs)
-        except (Exception, SystemExit) as e:  # run() SystemExit atar; yakalanmazsa iş kırmızı biter ve index'e yazılmaz
-            result["failed"] = str(e).replace("\n", " ")[:300]
-            log(f"BAŞARISIZ {name}: {result['failed']}")
+    built = out / "built"; built.mkdir(); tried = set(); files = {}
+    try:
+        for abi in ABIS:
+            dest = out / "dl" / abi; dest.mkdir(parents=True)
+            resolve(name, abi, xy, dest, built, tag, tried, allow_build=name not in NO_BUILD)
+            files[abi] = sorted(p.name for p in dest.glob("*.whl"))
+            for w in dest.glob("*.whl"):
+                shutil.copy(w, out / "wheels" / w.name)
+        result["files"] = files
+        result["native"] = any("android_" in f for fs in files.values() for f in fs)
+    except (Exception, SystemExit) as e:  # run() SystemExit atar; yakalanmazsa iş kırmızı biter, index'e yazılmaz
+        msg = str(e).replace("\n", " ")[:260]
+        result["failed"] = (GUI_NOTE if name in GUI_NATIVE else "") + msg
+        log(f"BAŞARISIZ {name}: {result['failed']}")
     (out / "result.json").write_text(json.dumps(result))
     for d in ("dl", "built"):
         shutil.rmtree(out / d, ignore_errors=True)
+
+
+def cmd_wheel(a):
+    xy, _, tag = tags(a.py)
+    names = batches()[a.batch]
+    log(f"grup {a.batch}: {names}")
+    for name in names:
+        wheel_one(name, xy, tag, Path(a.out) / a.batch)
 
 
 # --------------------------------------------------------------------------- yayın
@@ -371,9 +429,9 @@ def cmd_publish(a):
     for rj in dist.glob("**/result.json"):
         r = json.loads(rj.read_text())
         if "failed" in r:
-            failed[r["name"].lower()] = r["failed"]
+            failed[norm(r["name"])] = r["failed"]
         else:
-            libs[r["name"].lower()] = {"native": r["native"], "files": r["files"]}
+            libs[norm(r["name"])] = {"native": r["native"], "files": r["files"]}
         for w in (rj.parent / "wheels").glob("*.whl"):
             shutil.copy(w, rel / w.name)
     for f in list(dist.glob("**/runtime-*.zip")) + list(dist.glob("**/classes-*.dex")):
@@ -384,6 +442,8 @@ def cmd_publish(a):
     subprocess.run(["gh", "release", "create", tag, "--repo", a.repo, "--title", f"PyAPK kütüphaneleri ({tag})",
                     "--notes", "factory.py tarafından otomatik üretildi"])  # varsa hata verir, sorun değil
     files = [str(p) for p in sorted(rel.iterdir())]
+    if len(files) > 950:
+        log(f"UYARI: {len(files)} dosya var; GitHub release başına 1000 varlık sınırı var")
     for i in range(0, len(files), 40):
         run(["gh", "release", "upload", tag, "--repo", a.repo, "--clobber", *files[i:i + 40]])
     log(f"yayınlandı: {len(libs)} kütüphane hazır, {len(failed)} başarısız -> {sorted(failed)}")
@@ -393,12 +453,12 @@ def main():
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("list")
     r = sp.add_parser("runtime"); r.add_argument("--py", default="3.13.5"); r.add_argument("--out", default="dist")
-    w = sp.add_parser("wheel"); w.add_argument("name"); w.add_argument("--py", default="3.13")
+    w = sp.add_parser("wheel"); w.add_argument("batch"); w.add_argument("--py", default="3.13")
     w.add_argument("--out", default="dist")
     p = sp.add_parser("publish"); p.add_argument("--repo", required=True); p.add_argument("--dist", default="dist")
     a = ap.parse_args()
     if a.cmd == "list":
-        print(json.dumps(LIBS + BASE))
+        print(json.dumps(list(batches())))
     else:
         {"runtime": cmd_runtime, "wheel": cmd_wheel, "publish": cmd_publish}[a.cmd](a)
 
