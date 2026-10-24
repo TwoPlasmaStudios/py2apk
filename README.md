@@ -2,86 +2,45 @@
 
 [Türkçe](README.tr.md)
 
-Turn a Python script into an Android APK, from a simple desktop GUI.
-No Docker, no WSL, no compiler on your machine, and it runs on Windows, macOS and Linux.
+Turn a Python script into a signed Android APK from a terminal UI. Windows, macOS and Linux, no Docker, no compiling on your machine, no tkinter.
 
 ```
 pip install py2apk
 py2apk
 ```
 
-Pick your `.py` file, choose an app type, press **Build APK**. That's it.
+> **Status: alpha.** Console apps are verified on a real phone. The Web UI app type is new. Pygame and Kivy are still in beta development and cannot be used yet.
 
 ## How it works
 
-py2apk is split in two parts so that you never have to compile anything:
+1. **Factory** (`factory.py` + GitHub Actions) builds CPython and a large library set for Android once and publishes them as GitHub Release assets.
+2. **Tool** (`py2apk`) downloads those prebuilt parts, scans your imports, embeds your code, icon and libraries, writes the manifest, then packages and signs the APK.
 
-1. **The factory** (`factory.py` + a GitHub Actions workflow) runs once on GitHub.
-   It cross-compiles CPython for Android (arm64-v8a and x86_64), builds the Android
-   wheels for a set of popular libraries (Flask, NumPy, pandas, Pillow, ...), and
-   publishes everything as a GitHub Release.
-2. **The tool** (`py2apk.py`, the GUI you run) downloads those ready-made pieces,
-   scans your imports, bundles your code and the libraries it needs, writes the
-   Android manifest, and packages and signs the APK.
+Only a JDK 17 and the Android build-tools are downloaded on your machine (if missing), into `~/.py2apk`.
 
-The only things downloaded on your machine are a JDK 17 and the Android build-tools
-(if you don't already have them), kept in `~/.py2apk`.
-
-## Install
-
-From PyPI (once published):
+## Install and run
 
 ```
 pip install py2apk
+py2apk                 # terminal UI
+py2apk main.py         # terminal UI with a file preselected
+py2apk build main.py --name "My App" --package com.me.app --mode webview   # no UI (CI, scripts)
 ```
 
-Straight from GitHub (works today):
+**`py2apk` is not recognized?** On Windows, `pip install` often puts the launcher in a `Scripts` folder that is not on your PATH. Run `python -m py2apk` (or `py -m py2apk`) instead. py2apk also offers to add that folder to your PATH the first time it starts, or run `python -m py2apk --add-to-path` once and open a new terminal.
 
-```
-pip install git+https://github.com/TwoPlasmaStudios/py2apk.git
-```
+The UI is a terminal app (built with [Textual](https://textual.textualize.io/)), so it works in Windows Terminal, PowerShell, cmd, macOS Terminal, over SSH and in any Linux terminal. Optional: `pip install "py2apk[icon]"` resizes JPG/WebP logos.
 
-Requirements: Python 3.10+ with tkinter. The Windows and macOS installers from
-python.org include tkinter. On Debian/Ubuntu: `sudo apt install python3-tk`.
-Optional: `pip install py2apk[icon]` (Pillow) to use JPG/WebP logos and get a sharp preview.
+## App types
 
-**`py2apk` is not recognized?** On Windows, `pip install` often puts the launcher in a `Scripts`
-folder that is not on your PATH. Run it with `python -m py2apk` (or `py -m py2apk`) instead.
-py2apk also offers to add that folder to your PATH the first time the window opens, or you can run
-`python -m py2apk --add-to-path` once and open a new terminal.
-
-## Use it
-
-```
-py2apk                 # opens the GUI
-py2apk path/to/app.py  # opens the GUI with a file preselected
-```
-
-1. **Python file**: your entry script. Other `.py` files and packages next to it are
-   included automatically, so keep the project in its own folder.
-2. **App**: name, package name (e.g. `com.me.myapp`), version and an optional logo.
-3. **App type**: see below.
-4. **Libraries**: detected from your imports. Each one shows whether a ready-made
-   Android build exists. Add extra packages in the *Extra packages* field.
-5. Press **Build APK**. The first build downloads the JDK and Android tools (several
-   hundred MB); later builds are fast. The APK is written next to your script.
-
-Install it with `adb install MyApp-1.0.apk` or copy it to the phone and open it
-(allow installs from unknown sources). The APK is signed with a debug key, which is
-fine for testing and sideloading but not for Google Play.
-
-### App types
-
-| Type | Status | What you get |
+| Type | Status | What it does |
 |---|---|---|
-| **Console** | works | `print()` output is shown on screen. For scripts, bots, calculations. No `input()`. |
-| **Web UI** | works | Run Flask/FastAPI/etc. in your script. The app opens it full screen in a WebView. |
-| **Pygame / Games** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
+| **Console** | working | `print()` output is shown on screen. No `input()`. |
+| **Web UI** (Flask / FastAPI / NiceGUI + HTML) | supported, new | A local server runs on the phone and the UI is shown full screen in a WebView. |
+| **Pygame / games** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
 | **Kivy** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
 
-Tkinter does not exist on Android. Use the **Web UI** type for graphical apps.
-
-#### Web UI example
+Tkinter, Qt (PyQt/PySide) and wxPython do not run on Android with this runtime. Use the Web UI type for a graphical interface.
 
 ```python
 import os
@@ -91,94 +50,59 @@ app = Flask(__name__)
 
 @app.get("/")
 def index():
-    return "<h1>Hello from Android!</h1>"
+    return "<h1>Hello, Android!</h1>"
 
 app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)
 ```
 
-Keep `debug=False` (the reloader starts a second process, which Android won't allow) and
-listen on `127.0.0.1`. The port is set in the GUI and passed to your code as `PORT`.
-If the server fails to start, the app shows the Python traceback instead of a blank page.
+Keep `debug=False` (the reloader starts a second process, which Android does not allow). The port is chosen in the UI and passed to your code as `PORT`. If the server never starts, the app shows the Python error log instead of a blank page.
 
 ## Libraries
 
-The factory builds Android wheels for a fixed list of popular packages
-(see `LIBS` in `factory.py`), plus all of their dependencies. Pure-Python packages
-work as they are. Packages with C extensions only work if an Android build exists.
+The factory targets **174 libraries** (plus their dependencies). Each is resolved from existing Android or pure-Python wheels (PyPI, Chaquopy index) and, where possible, built from source with cibuildwheel. What is actually available shows up next to each import in the UI (`ready` / `failed` / `will try pip`), and in `index.json` of the Release.
 
-* Packages in the Release are used first.
-* Anything else is tried from PyPI (pure-Python or Android wheels) with `pip`.
-* If nothing is found you get a warning in the log and the package is skipped.
+| Category | Count | Libraries |
+|---|---|---|
+| Web / sunucu | 30 | flask, django, fastapi, starlette, uvicorn, bottle, quart, tornado, aiohttp, falcon, cherrypy, waitress, werkzeug, jinja2, requests, httpx, websockets, python-socketio, flask-socketio, flask-cors, flask-sqlalchemy, flask-login, flask-wtf, nicegui, dash, pywebio, remi, streamlit, gradio, websocket-client |
+| GUI / oyun | 16 | pygame, pygame-ce, kivy, kivymd, pyglet, arcade, pysdl2, pymunk, pygame-gui, pgzero, raylib, moderngl, pyopengl, panda3d, ursina, flet |
+| Minecraft / bot / sosyal | 11 | minecraft-launcher-lib, mcstatus, nbtlib, mcrcon, discord.py, python-telegram-bot, aiogram, pytelegrambotapi, slack-sdk, tweepy, praw |
+| Ağ / donanım | 10 | paho-mqtt, dnspython, paramiko, pysocks, aiofiles, httpcore, pyserial, scapy, zeroconf, ping3 |
+| Veri / bilim / görüntü | 20 | numpy, pandas, scipy, scikit-learn, matplotlib, seaborn, plotly, sympy, networkx, statsmodels, scikit-image, bokeh, openpyxl, xlsxwriter, xlrd, polars, tabulate, pillow, opencv-python-headless, imageio |
+| Metin / ayrıştırma | 31 | beautifulsoup4, lxml, html5lib, pyyaml, tomlkit, python-dotenv, jsonschema, markdown, mistune, pygments, docutils, rich, tqdm, colorama, click, typer, loguru, pyfiglet, prompt-toolkit, regex, python-dateutil, pytz, tzdata, arrow, babel, unidecode, emoji, jmespath, xmltodict, feedparser, markdownify |
+| Veritabanı | 8 | sqlalchemy, alembic, peewee, tinydb, pymongo, redis, aiosqlite, sqlmodel |
+| Güvenlik | 11 | cryptography, pycryptodome, bcrypt, pynacl, pyjwt, passlib, argon2-cffi, pyotp, itsdangerous, oauthlib, authlib |
+| Yardımcı | 23 | attrs, pydantic, marshmallow, orjson, ujson, msgpack, cachetools, tenacity, more-itertools, toolz, schedule, apscheduler, psutil, python-slugify, shortuuid, qrcode, faker, humanize, pint, filelock, platformdirs, packaging, six |
+| Belge / medya | 7 | reportlab, fpdf2, pypdf, python-docx, python-pptx, mutagen, gtts |
+| Yapay zeka | 6 | openai, anthropic, ollama, huggingface-hub, tokenizers, google-generativeai |
 
-Which libraries are available changes as the factory improves: open the
-`index.json` asset of the Release (or look at the status column in the GUI).
-Some heavy packages (SciPy, scikit-learn, OpenCV, anything needing Rust or Fortran
-toolchains) are the hardest to cross-compile and may be marked as failed.
+Libraries that need a window system or heavy native chains (pygame, kivy, pyglet, arcade, raylib, panda3d, polars, streamlit, gradio, ...) are only picked up if a ready Android wheel exists. Otherwise they are listed as failed with the reason. Anything not in the list is tried with `pip` (pure-Python packages work; C extensions need an Android wheel).
+
+## Limits
+
+- Python 3.13 runtime, `arm64-v8a` (phones) and `x86_64` (emulator), Android 7.0+ (API 24).
+- No `input()`, no SDL windowing yet (pygame, kivy).
+- APKs are signed with a public debug key: fine for testing, not for Google Play.
 
 ## Run your own factory
 
-Fork the repository, enable Actions, give the workflow write access
-(*Settings -> Actions -> General -> Workflow permissions -> Read and write*), then run
-**Actions -> factory -> Run workflow**. When it finishes, a release tagged `cp313` appears.
-Point the tool at your fork:
+Fork the repo, then **Settings -> Actions -> General -> Workflow permissions -> Read and write**, then **Actions -> factory -> Run workflow**. A release tagged `cp313` appears when it finishes. Point the tool at it:
 
 ```
-# Windows (PowerShell)
-$env:PY2APK_REPO = "you/your-fork"
-# macOS / Linux
-export PY2APK_REPO=you/your-fork
+export PY2APK_REPO=user/repo          # PowerShell: $env:PY2APK_REPO = "user/repo"
 ```
 
-Or use *Advanced -> GitHub repository* inside the GUI.
-
-## Environment variables
-
-| Variable | Meaning |
-|---|---|
-| `PY2APK_REPO` | GitHub `owner/repo` that hosts the Release (default `TwoPlasmaStudios/py2apk`) |
-| `PY2APK_HOME` | Cache folder (default `~/.py2apk`) |
-| `PY2APK_PY` | Release tag, i.e. the Python version (default `cp313`) |
+Other variables: `PY2APK_HOME` (cache folder, default `~/.py2apk`), `PY2APK_PY` (release tag). A Release can hold at most 1000 assets; the factory warns when it gets close.
 
 ## Troubleshooting
 
-* **"Library index could not be fetched"**: the repository must be public and the factory
-  must have finished at least once.
-* **App crashes or shows a traceback**: run `adb logcat -s pyapk` while opening it.
-* **Import error for a native library**: that package has no Android build yet. Check its
-  status in the GUI.
-* **Build fails while downloading tools**: check your connection; downloads resume from the cache.
-
-## Limitations
-
-* Python 3.13 runtime, arm64-v8a and x86_64 only, minimum Android 7.0 (API 24).
-* Pygame and Kivy are still in beta development and cannot be used yet; tkinter does not exist on Android.
-* Console apps have no interactive input.
-* Debug-signed APKs only.
+- **"Could not fetch library index":** the repo must be public and the factory must have finished once.
+- **App crashes on start:** run `adb logcat -s pyapk` while opening it.
+- **Native import error:** that package has no Android build yet; check its status in the UI.
 
 ## Publishing to PyPI (maintainers)
 
-Releases are published by `.github/workflows/publish.yml` with PyPI Trusted Publishing
-(no API token needed). It only runs for tags that start with `v`, so the `cp313` release
-created by the factory never triggers it.
-
-One-time setup:
-
-1. Check that the name is free: https://pypi.org/project/py2apk/ should return 404.
-2. On pypi.org: *Your projects -> Publishing -> Add a new pending publisher* with
-   project `py2apk`, owner `TwoPlasmaStudios`, repository `py2apk`,
-   workflow `publish.yml`, environment `pypi`.
-3. On GitHub: *Settings -> Environments -> New environment* named `pypi`.
-
-Each release: bump `version` in `pyproject.toml`, then
-
-```
-git tag v0.3.0
-git push origin v0.3.0
-```
-
-Manual alternative: `pip install build twine`, `python -m build`, `twine upload dist/*`
-(use an API token, username `__token__`).
+`.github/workflows/publish.yml` publishes with Trusted Publishing (no token) when you push a tag starting with `v`; the factory's `cp313` release does not trigger it. Register the publisher once on pypi.org (owner `TwoPlasmaStudios`, repository `py2apk`, workflow `publish.yml`, environment `pypi`), bump `version` in `pyproject.toml`, then `git tag v0.4.0 && git push origin v0.4.0`.
 
 ## License
 
-MIT. Libraries in the Release keep their own licenses; CPython is under the PSF license.
+See the `LICENSE` file. Libraries in the Release keep their own licenses; CPython is under the PSF license.
