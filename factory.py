@@ -20,8 +20,8 @@ CATEGORIES = {
                      "falcon", "cherrypy", "waitress", "werkzeug", "jinja2", "requests", "httpx", "websockets",
                      "python-socketio", "flask-socketio", "flask-cors", "flask-sqlalchemy", "flask-login",
                      "flask-wtf", "nicegui", "dash", "pywebio", "remi", "streamlit", "gradio", "websocket-client"],
-    "GUI / oyun": ["pygame", "pygame-ce", "kivy", "kivymd", "pyglet", "arcade", "pysdl2", "pymunk", "pygame-gui",
-                   "pgzero", "raylib", "moderngl", "pyopengl", "panda3d", "ursina", "flet"],
+    "GUI / oyun": ["kivy", "kivymd", "pyjnius", "plyer", "pygame", "pygame-ce", "pyglet", "arcade", "pysdl2",
+                   "pymunk", "pygame-gui", "pgzero", "raylib", "moderngl", "pyopengl", "panda3d", "ursina", "flet"],
     "Minecraft / bot / sosyal": ["minecraft-launcher-lib", "mcstatus", "nbtlib", "mcrcon", "discord.py",
                                  "python-telegram-bot", "aiogram", "pytelegrambotapi", "slack-sdk", "tweepy", "praw"],
     "Ağ / donanım": ["paho-mqtt", "dnspython", "paramiko", "pysocks", "aiofiles", "httpcore", "pyserial", "scapy",
@@ -47,11 +47,11 @@ BASE = ["certifi"]  # her APK'ya girer (https sertifikaları)
 ALL = list(dict.fromkeys([n for v in CATEGORIES.values() for n in v] + BASE))
 # Kaynaktan ASLA derlenmeyenler: yalnızca hazır Android/saf-Python wheel varsa alınır (yoksa "başarısız" yazılır).
 # Pencere/SDL gerektirenler, Rust/gRPC/Arrow gibi ağır zincirler, bu çalışma zamanında anlamsız ya da çok pahalı.
-GUI_NATIVE = {"pygame", "pygame-ce", "kivy", "pysdl2", "panda3d", "ursina", "raylib", "moderngl", "arcade", "flet",
+GUI_NATIVE = {"pygame", "pygame-ce", "pysdl2", "panda3d", "ursina", "raylib", "moderngl", "arcade", "flet",
               "pymunk", "pyglet"}
-NO_BUILD = GUI_NATIVE | {"polars", "tokenizers", "google-generativeai", "pymongo", "streamlit", "gradio",
+NO_BUILD = GUI_NATIVE | {"kivy", "pyjnius", "polars", "tokenizers", "google-generativeai", "pymongo", "streamlit", "gradio",
                          "huggingface-hub", "pgzero", "pygame-gui", "kivymd"}
-GUI_NOTE = "SDL2/pencere altyapısı henüz yok (beta). Android wheel bulunamadı: "
+GUI_NOTE = "SDL çalışma zamanı hazır ama bu paketin Android wheel'i yok: "
 # Ağır (kaynaktan derleme ihtimali olan) kütüphaneler tek başına bir iş olur; kalanlar 10'arlı gruplanır.
 HEAVY = {"numpy", "pandas", "scipy", "scikit-learn", "matplotlib", "pillow", "opencv-python-headless", "cryptography",
          "lxml", "pydantic", "psutil", "scikit-image", "statsmodels", "bcrypt", "pynacl", "pycryptodome", "orjson",
@@ -284,6 +284,136 @@ public class MainActivity extends Activity {
 '''
 
 
+SDL_VER = "2.32.10"   # Kivy 2.3.1 Android tekerleğindeki SDL2 ile AYNI olmalı (Java yapıştırıcısı sürüm denetler)
+KIVY_INDEX = os.environ.get("KIVY_MOBILE_INDEX", "https://elliotgarbus.github.io/kivy-mobile-wheels/simple/")
+
+RUNNER_SDL_C = r'''#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <android/log.h>
+
+static int pfd[2];
+
+static void *pump(void *arg) {
+    char buf[2048]; ssize_t n;
+    while ((n = read(pfd[0], buf, sizeof buf - 1)) > 0) {
+        buf[n] = 0;
+        __android_log_write(ANDROID_LOG_INFO, "pyapk", buf);
+    }
+    return NULL;
+}
+
+/* SDLActivity, libmain.so icindeki bu fonksiyonu ayri bir iş parçacığında çağırır */
+__attribute__((visibility("default"))) int SDL_main(int argc, char *argv[]) {
+    pthread_t t;
+    if (pipe(pfd) == 0) { dup2(pfd[1], 1); dup2(pfd[1], 2); pthread_create(&t, 0, pump, 0); pthread_detach(t); }
+    const char *home = getenv("PY2APK_HOME");
+    if (!home) { dprintf(2, "PY2APK_HOME tanimli degil\n"); return 1; }
+    PyConfig cfg; PyConfig_InitPythonConfig(&cfg);
+    cfg.buffered_stdio = 0; cfg.install_signal_handlers = 0;
+    PyStatus st = PyConfig_SetBytesString(&cfg, &cfg.home, home);
+    if (!PyStatus_Exception(st)) st = Py_InitializeFromConfig(&cfg);
+    PyConfig_Clear(&cfg);
+    if (PyStatus_Exception(st)) { dprintf(2, "Python baslatilamadi: %s\n", st.err_msg ? st.err_msg : "?"); return 1; }
+    return PyRun_SimpleString("import _pyapk_boot");
+}
+'''
+
+PYSDL_JAVA = r'''package pyapk.runtime;
+
+import android.os.Build;
+import android.os.Bundle;
+import android.system.Os;
+import java.io.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.zip.*;
+import org.libsdl.app.SDLActivity;
+
+/** SDL tabanlı uygulamalar (Kivy, ileride pygame): SDLActivity + gömülü CPython. */
+public class PySdlActivity extends SDLActivity {
+    @Override protected String[] getLibraries() {
+        // SDL2 önce, sonra SDL2_image/mixer/ttf gibi yardımcılar, sonra Python, en son "main" (SDL_main burada)
+        List<String> libs = new ArrayList<>();
+        libs.add("SDL2");
+        File[] files = new File(getApplicationInfo().nativeLibraryDir).listFiles();
+        if (files != null) {
+            Arrays.sort(files);
+            for (File f : files) {
+                String n = f.getName();
+                if (n.startsWith("libSDL2") && n.endsWith(".so") && !n.equals("libSDL2.so"))
+                    libs.add(n.substring(3, n.length() - 3));
+            }
+        }
+        libs.add("@PYLIB@");
+        libs.add("main");
+        return libs.toArray(new String[0]);
+    }
+
+    @Override protected void onCreate(Bundle b) {
+        try { prepare(); } catch (Throwable t) { android.util.Log.e("pyapk", "hazirlik basarisiz", t); }
+        super.onCreate(b);
+    }
+
+    void prepare() throws Exception {
+        File files = getFilesDir(), home = new File(files, "pyhome"), app = new File(home, "app");
+        unpack(home);
+        Os.setenv("HOME", home.getAbsolutePath(), true);
+        Os.setenv("TMPDIR", getCacheDir().getAbsolutePath(), true);
+        Os.setenv("PY2APK_HOME", home.getAbsolutePath(), true);
+        Os.setenv("PYTHONPATH", app.getAbsolutePath(), true);
+        // python-for-android uyumlu değişkenler (Kivy bunlara bakar)
+        Os.setenv("ANDROID_ARGUMENT", app.getAbsolutePath(), true);
+        Os.setenv("ANDROID_APP_PATH", app.getAbsolutePath(), true);
+        Os.setenv("ANDROID_PRIVATE", files.getAbsolutePath(), true);
+        Os.setenv("KIVY_HOME", new File(home, ".kivy").getAbsolutePath(), true);
+    }
+
+    void unpack(File home) throws IOException {
+        String stamp;
+        try { stamp = String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime); }
+        catch (Exception e) { throw new IOException(e); }
+        File stampFile = new File(home, ".stamp");
+        if (stampFile.exists()) {
+            try (BufferedReader r = new BufferedReader(new FileReader(stampFile))) {
+                if (stamp.equals(r.readLine())) return;
+            }
+        }
+        delete(home); home.mkdirs();
+        InputStream in = null;
+        for (String abi : Build.SUPPORTED_ABIS) {
+            try { in = getAssets().open("pyhome-" + abi + ".zip"); break; } catch (IOException e) { }
+        }
+        if (in == null) throw new IOException("Bu cihazin ABI'si icin paket yok");
+        String root = home.getCanonicalPath() + File.separator;
+        try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(in))) {
+            ZipEntry e; byte[] buf = new byte[65536];
+            while ((e = z.getNextEntry()) != null) {
+                File f = new File(home, e.getName());
+                if (!f.getCanonicalPath().startsWith(root)) continue;
+                if (e.isDirectory()) { f.mkdirs(); continue; }
+                f.getParentFile().mkdirs();
+                try (FileOutputStream o = new FileOutputStream(f)) {
+                    int n; while ((n = z.read(buf)) > 0) o.write(buf, 0, n);
+                }
+            }
+        }
+        try (FileWriter w = new FileWriter(stampFile)) { w.write(stamp); }
+    }
+
+    static void delete(File f) {
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) delete(k);
+        f.delete();
+    }
+}
+'''
+
+
 def zip_dir(src: Path, dest: Path):
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(src.rglob("*")):
@@ -323,9 +453,18 @@ def cmd_runtime(a):
         run([ndk / "bin" / f"{triple}{API}-clang", "-shared", "-fPIC", "-O2", "-o", libs / "libpyrunner.so",
              _write(stage / "pyrunner.c", RUNNER_C), f"-I{prefix}/include/python{xy}", f"-L{prefix}/lib",
              f"-lpython{xy}", "-llog", "-Wl,-z,max-page-size=16384"])
-        for so in list(libs.glob("*.so")) + list((home / "lib" / f"python{xy}" / "lib-dynload").glob("*.so")):
+        # SDL modu (Kivy/pygame): SDLActivity'nin çağıracağı libmain.so + C++ çalışma zamanı
+        sdl = stage / "libs-sdl"; sdl.mkdir()
+        run([ndk / "bin" / f"{triple}{API}-clang", "-shared", "-fPIC", "-O2", "-o", sdl / "libmain.so",
+             _write(stage / "main_sdl.c", RUNNER_SDL_C), f"-I{prefix}/include/python{xy}", f"-L{prefix}/lib",
+             f"-lpython{xy}", "-llog", "-Wl,-z,max-page-size=16384"])
+        stl = ndk / "sysroot" / "usr" / "lib" / triple / "libc++_shared.so"
+        if stl.exists():
+            shutil.copy(stl, sdl / "libc++_shared.so")
+        for so in (list(libs.glob("*.so")) + list(sdl.glob("*.so"))
+                   + list((home / "lib" / f"python{xy}" / "lib-dynload").glob("*.so"))):
             subprocess.run([str(ndk / "bin" / "llvm-strip"), "--strip-unneeded", str(so)])
-        (stage / "pyrunner.c").unlink()
+        (stage / "pyrunner.c").unlink(); (stage / "main_sdl.c").unlink()
         zip_dir(stage, out / f"runtime-{tag}-{abi}.zip")
 
     # JNI'li Java etkinliği -> classes.dex (tüm ABI'ler için ortak)
@@ -338,7 +477,26 @@ def cmd_runtime(a):
     run([sdk / "build-tools" / BT / "d8", "--lib", jar, "--release", "--min-api", API, "--output", dexdir,
          *map(str, classes.rglob("*.class"))])
     shutil.copy(dexdir / "classes.dex", out / f"classes-{tag}.dex")
-    (out / "meta.json").write_text(json.dumps({"py": xy, "tag": tag, "abis": list(ABIS)}))
+
+    # SDL2 Java yapıştırıcısı (org/libsdl/app) + PySdlActivity -> classes-sdl dex
+    sdl_tgz = work / f"SDL2-{SDL_VER}.tar.gz"
+    if not sdl_tgz.exists():
+        urllib.request.urlretrieve(
+            f"https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VER}/SDL2-{SDL_VER}.tar.gz", sdl_tgz)
+    with tarfile.open(sdl_tgz) as t:
+        t.extractall(work)
+    sdl_java = work / f"SDL2-{SDL_VER}" / "android-project" / "app" / "src" / "main" / "java"
+    jsdl = work / "javasdl"; shutil.rmtree(jsdl, ignore_errors=True)
+    shutil.copytree(sdl_java, jsdl)
+    (jsdl / "pyapk" / "runtime").mkdir(parents=True, exist_ok=True)
+    (jsdl / "pyapk" / "runtime" / "PySdlActivity.java").write_text(PYSDL_JAVA.replace("@PYLIB@", f"python{xy}"))
+    classes2 = work / "classes-sdl"; shutil.rmtree(classes2, ignore_errors=True); classes2.mkdir()
+    run(["javac", "--release", "8", "-classpath", jar, "-d", classes2, *map(str, jsdl.rglob("*.java"))])
+    dex2 = work / "dex-sdl"; shutil.rmtree(dex2, ignore_errors=True); dex2.mkdir()
+    run([sdk / "build-tools" / BT / "d8", "--lib", jar, "--release", "--min-api", API, "--output", dex2,
+         *map(str, classes2.rglob("*.class"))])
+    shutil.copy(dex2 / "classes.dex", out / f"classes-sdl-{tag}.dex")
+    (out / "meta.json").write_text(json.dumps({"py": xy, "tag": tag, "abis": list(ABIS), "sdl": SDL_VER}))
     shutil.rmtree(out / "stage")
 
 
@@ -351,7 +509,8 @@ def pip_cmd(name, abi, xy, dest, built):
     n = xy.replace(".", "")
     cmd = [sys.executable, "-m", "pip", "download", name, "-d", str(dest), "--only-binary=:all:",
            "--implementation", "cp", "--python-version", xy, "--abi", f"cp{n}", "--disable-pip-version-check",
-           "--extra-index-url", CHAQUOPY, "--find-links", str(built)]
+           "--extra-index-url", CHAQUOPY, "--extra-index-url", KIVY_INDEX,
+           "--find-links", str(built)]
     for api in range(21, API + 1):
         cmd += ["--platform", f"android_{api}_{abi.replace('-', '_')}"]
     return cmd
