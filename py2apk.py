@@ -11,8 +11,8 @@ eksik araçları (JDK, Android build-tools) indirir, hazır parçaları çeker v
 """
 from __future__ import annotations
 
-import ast, json, os, platform, re, shutil, struct, subprocess, sys, tarfile
-import threading, traceback, urllib.parse, urllib.request, zipfile, zlib
+import ast, io, json, os, platform, re, shutil, struct, subprocess, sys, tarfile
+import threading, time, traceback, urllib.parse, urllib.request, zipfile, zlib
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
@@ -44,8 +44,6 @@ UNSUPPORTED = {
     "PyQt5": "Qt bu çalışma zamanıyla Android'de çalışmaz", "PyQt6": "Qt bu çalışma zamanıyla Android'de çalışmaz",
     "PySide2": "Qt bu çalışma zamanıyla Android'de çalışmaz", "PySide6": "Qt bu çalışma zamanıyla Android'de çalışmaz",
     "wx": "wxPython Android'de çalışmaz",
-    "pygame": "pygame için SDL altyapısı beta aşamasında, henüz yok",
-    "kivy": "kivy için SDL altyapısı beta aşamasında, henüz yok",
     "pyglet": "pyglet için pencere/OpenGL altyapısı henüz yok", "arcade": "arcade için pencere altyapısı henüz yok",
     "sdl2": "SDL2 altyapısı henüz yok", "panda3d": "panda3d için pencere altyapısı henüz yok"}
 WEB_LIBS = {"flask", "fastapi", "bottle", "django", "quart", "starlette", "uvicorn", "waitress", "tornado",
@@ -53,9 +51,11 @@ WEB_LIBS = {"flask", "fastapi", "bottle", "django", "quart", "starlette", "uvico
 MODES = [  # (anahtar, başlık, açıklama, destekleniyor)
     ("console", "Konsol", "print() çıktısı ekranda görünür. Betikler, botlar, hesaplamalar.", True),
     ("webview", "Web arayüzü", "Flask / FastAPI / NiceGUI + HTML. Uygulama yerel sunucu açar, arayüz WebView'da görünür.", True),
-    ("pygame", "Pygame / Oyun", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
-    ("kivy", "Kivy", "SDL2 altyapısı beta aşamasında, henüz seçilemez.", False),
+    ("pygame", "Pygame / Oyun", "BETA: pygame-ce, SDL2 şablonuyla. Deneysel.", True),
+    ("kivy", "Kivy", "BETA: Kivy, SDL2 şablonuyla. Deneysel.", True),
 ]
+SDL_MODES = {"kivy": "kivy", "pygame": "pygame"}                      # mod -> şablon adı
+SDL_BUILTIN = {"kivy", "pygame", "pygame-ce", "cython", "pyjnius"}    # şablonda hazır, pip ile eklenmez
 
 
 # --------------------------------------------------------------------------- günlük / hata
@@ -179,13 +179,16 @@ def asset_url(repo, tag, name):
     return f"https://github.com/{repo}/releases/download/{tag}/{urllib.parse.quote(name)}"
 
 
-def fetch_index(repo):
+def fetch_json(url, what):
     try:
-        with urllib.request.urlopen(asset_url(repo, PY_TAG, "index.json"), timeout=30) as r:
+        with urllib.request.urlopen(url, timeout=30) as r:
             return json.load(r)
     except Exception as e:
-        die(f"Kütüphane dizini alınamadı ({repo}, etiket {PY_TAG}): {e}\n"
-            "GitHub deposunda 'factory' iş akışının çalışıp release oluşturduğundan emin olun.")
+        die(f"{what} alınamadı: {e}\nGitHub deposunda ilgili iş akışının çalışıp release oluşturduğundan emin olun.")
+
+
+def fetch_index(repo):
+    return fetch_json(asset_url(repo, PY_TAG, "index.json"), f"Kütüphane dizini ({repo}, etiket {PY_TAG})")
 
 
 def lib_status(idx, lib):
@@ -264,17 +267,22 @@ def make_icon(icon, dest: Path):
 
 
 def manifest_xml(pkg, name, vname, vcode, mode="console", port=5000):
+    sdl = mode == "sdl"
+    activity = "pyapk.runtime.PySdlActivity" if sdl else "pyapk.runtime.MainActivity"
+    theme = "@android:style/Theme.NoTitleBar.Fullscreen" if sdl else "@android:style/Theme.Material.Light.NoActionBar"
+    gl = '\n  <uses-feature android:glEsVersion="0x00020000" android:required="true"/>' if sdl else ""
+    extra = ' android:launchMode="singleTask" android:screenOrientation="unspecified"' if sdl else ""
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package={quoteattr(pkg)}
     android:versionCode="{vcode}" android:versionName={quoteattr(vname)}>
-  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.INTERNET"/>{gl}
   <application android:label={quoteattr(name)} android:icon="@mipmap/ic_launcher" android:allowBackup="false"
-      android:extractNativeLibs="true" android:usesCleartextTraffic="true"
-      android:theme="@android:style/Theme.Material.Light.NoActionBar">
+      android:extractNativeLibs="true" android:usesCleartextTraffic="true" android:hardwareAccelerated="true"
+      android:theme="{theme}">
     <meta-data android:name="py2apk.mode" android:value={quoteattr(mode)}/>
     <meta-data android:name="py2apk.port" android:value={quoteattr(str(port))}/>
-    <activity android:name="pyapk.runtime.MainActivity" android:exported="true"
-        android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode">
+    <activity android:name="{activity}" android:exported="true"{extra}
+        android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|screenLayout|smallestScreenSize|uiMode|density|layoutDirection">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>
@@ -307,10 +315,25 @@ print("\n[program sona erdi]")
 
 
 # --------------------------------------------------------------------------- APK üretimi
+def grafted_libs(site: Path):
+    """Tekerleklerin içine gömülü paylaşımlı kütüphaneleri (libSDL2*.so, *.libs/ vb.) bulur; Android bunları
+    yalnızca APK'nın lib/<abi>/ klasöründen yükleyebilir."""
+    found = {}
+    for p in site.rglob("*.so"):
+        n = p.name
+        if not n.startswith("lib"):
+            continue
+        if n.startswith("libSDL") or n == "libc++_shared.so" or p.parent.name == ".libs" or p.parent.name.endswith(".libs"):
+            found.setdefault(n, p)
+    return found
+
+
 def build_apk(c) -> Path:
     """c: script, name, package, icon, version, vcode, abis, libs(list), repo, add(list)"""
+    if c.get("mode") in SDL_MODES:
+        return build_sdl_apk(c)
     if c.get("mode", "console") not in ("console", "webview"):
-        die("Bu uygulama türü henüz desteklenmiyor")
+        die("Bu uygulama türü desteklenmiyor")
     idx = fetch_index(c["repo"])
     py, tag, bid = idx["py"], idx["tag"], idx["build"]
     for abi in c["abis"]:
@@ -336,7 +359,8 @@ def build_apk(c) -> Path:
          "--version-name", c["version"], work / "res.zip"])
 
     dl = HOME / "dl" / bid
-    dex = download(asset_url(c["repo"], tag, f"classes-{tag}.dex"), dl / "classes.dex")
+    dex_name = f"classes-sdl-{tag}.dex" if mode == "sdl" else f"classes-{tag}.dex"
+    dex = download(asset_url(c["repo"], tag, dex_name), dl / dex_name)
     parts = {}
     for abi in c["abis"]:
         rt = HOME / "runtime" / bid / abi
@@ -371,7 +395,16 @@ def build_apk(c) -> Path:
             for p in sorted(root.rglob("*")):
                 if p.is_file():
                     zf.write(p, p.relative_to(root).as_posix())
-        parts[abi] = (sorted((rt / "libs").glob("*.so")), z)
+        sos = {p.name: p for p in (rt / "libs").glob("*.so")}
+        if mode == "sdl":
+            sos.update({p.name: p for p in (rt / "libs-sdl").glob("*.so")})
+            sos.update(grafted_libs(site))     # tekerleklerle gelen libSDL2*.so ve yardımcıları
+            log(f"{abi}: APK'ya giren yerel kütüphaneler: {sorted(sos)}")
+            if "libSDL2.so" not in sos:
+                log("UYARI: libSDL2.so bulunamadı (kivy tekerleği SDL kütüphanesini içermiyor olabilir)")
+        else:
+            sos.pop("libmain.so", None)
+        parts[abi] = (sorted(sos.values(), key=lambda p: p.name), z)
 
     with zipfile.ZipFile(base, "a") as z:
         z.write(dex, "classes.dex", zipfile.ZIP_DEFLATED)
@@ -394,6 +427,185 @@ def build_apk(c) -> Path:
     return out
 
 
+
+
+# --------------------------------------------------------------------------- SDL şablonu (Kivy / pygame-ce, BETA)
+# Fabrika python-for-android ile bir şablon APK üretir. Burada o APK'nın ikili manifest/resources dizgi havuzları
+# yamalanır (paket adı, uygulama adı, sürüm), uygulama kodu private.tar'a konur, APK yeniden imzalanır.
+def _read_pool(b, off):
+    typ, hsz, size = struct.unpack_from("<HHI", b, off)
+    if typ != 1:
+        die("Şablonda string havuzu bulunamadı (biçim beklenenden farklı)")
+    scount, stcount, flags, sstart, ststart = struct.unpack_from("<5I", b, off + 8)
+    offs = struct.unpack_from(f"<{scount}I", b, off + hsz)
+    style_offs = bytes(b[off + hsz + 4 * scount: off + hsz + 4 * scount + 4 * stcount])
+    styles_raw = bytes(b[off + ststart: off + size]) if stcount else b""
+    out = []
+    for o in offs:
+        p = off + sstart + o
+        if flags & 0x100:                                   # UTF-8: önce karakter, sonra bayt uzunluğu
+            for _ in range(2):
+                n = b[p]
+                if n & 0x80:
+                    n = ((n & 0x7F) << 8) | b[p + 1]; p += 2
+                else:
+                    p += 1
+            out.append(bytes(b[p:p + n]).decode("utf-8", "replace"))
+        else:                                               # UTF-16
+            n = struct.unpack_from("<H", b, p)[0]; p += 2
+            if n & 0x8000:
+                n = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", b, p)[0]; p += 2
+            out.append(bytes(b[p:p + 2 * n]).decode("utf-16-le", "replace"))
+    return out, flags, style_offs, styles_raw, size
+
+
+def _write_pool(strings, flags, style_offs, styles_raw):
+    data, offs = bytearray(), []
+    for st in strings:
+        offs.append(len(data))
+        if flags & 0x100:
+            raw = st.encode("utf-8", "replace")
+            enc = lambda n: bytes([n]) if n < 0x80 else bytes([0x80 | (n >> 8), n & 0xFF])
+            data += enc(len(st.encode("utf-16-le")) // 2) + enc(len(raw)) + raw + b"\0"
+        else:
+            u = st.encode("utf-16-le"); n = len(u) // 2
+            data += (struct.pack("<H", n) if n < 0x8000 else struct.pack("<HH", 0x8000 | (n >> 16), n & 0xFFFF))
+            data += u + b"\0\0"
+    while len(data) % 4:
+        data += b"\0"
+    hsz = 28
+    sstart = hsz + 4 * len(strings) + len(style_offs)
+    ststart = sstart + len(data) if styles_raw else 0
+    size = sstart + len(data) + len(styles_raw)
+    return (struct.pack("<HHI5I", 1, hsz, size, len(strings), len(style_offs) // 4, flags & ~1, sstart, ststart)
+            + struct.pack(f"<{len(strings)}I", *offs) + style_offs + bytes(data) + styles_raw)
+
+
+def _repack(buf, fn):
+    """AXML veya resources.arsc içindeki ilk string havuzunu fn ile yeniden yazar."""
+    hsz = struct.unpack_from("<H", buf, 2)[0]
+    strings, flags, style_offs, styles_raw, psize = _read_pool(buf, hsz)
+    pool = _write_pool([fn(x) for x in strings], flags, style_offs, styles_raw)
+    out = bytearray(buf[:hsz]) + pool + buf[hsz + psize:]
+    struct.pack_into("<I", out, 4, len(out))
+    return out, hsz + len(pool)
+
+
+def patch_axml(buf, repl):
+    def fn(x):
+        for a, b in repl:
+            x = x.replace(a, b)
+        return x
+    return bytes(_repack(buf, fn)[0])
+
+
+def patch_arsc(buf, repl, stamp):
+    seen = []
+
+    def fn(x):
+        if not seen and re.fullmatch(r"\d{9,}(\.\d+)?", x):      # p4a private_version: yeniden açılımı tetikler
+            seen.append(x); return stamp
+        for a, b in repl:
+            x = x.replace(a, b)
+        return x
+    out, pos = _repack(buf, fn)
+    old_pkg, new_pkg = repl[0]
+    while pos + 8 <= len(out):                                   # paket parçasındaki ad da güncellenmeli
+        ctyp, _, csz = struct.unpack_from("<HHI", out, pos)
+        if ctyp == 0x0200:
+            name = bytes(out[pos + 12:pos + 12 + 256]).decode("utf-16-le").split("\0")[0]
+            if name == old_pkg:
+                out[pos + 12:pos + 12 + 256] = new_pkg.encode("utf-16-le").ljust(256, b"\0")[:256]
+        if csz == 0:
+            break
+        pos += csz
+    return bytes(out)
+
+
+def build_private_tar(old, src, items, site_dir):
+    """Şablonun private.tar'ını koruyup sahte main.py'yi çıkarır, kullanıcı kodunu ve paketlerini ekler."""
+    gz = old[:2] == b"\x1f\x8b"
+    out, site_rel = io.BytesIO(), None
+    skip = lambda ti: None if "__pycache__" in ti.name else ti
+    with tarfile.open(fileobj=io.BytesIO(old), mode="r:*") as tin, \
+            tarfile.open(fileobj=out, mode="w:gz" if gz else "w") as tout:
+        for m in tin.getmembers():
+            name = m.name[2:] if m.name.startswith("./") else m.name
+            if name in ("main.py", "main.pyc", "main.pyo"):
+                continue
+            if m.isdir() and site_rel is None and re.search(r"(^|/)site-packages$", name):
+                site_rel = name
+            tout.addfile(m, tin.extractfile(m) if m.isfile() else None)
+        site_rel = site_rel or "_python_bundle/site-packages"
+        log(f"private.tar: site-packages = {site_rel}")
+        for it in items:
+            if it.is_file() and it.name == "main.py" and src.name != "main.py":
+                continue
+            tout.add(str(it), arcname=it.name, filter=skip)
+        tout.add(str(src), arcname="main.py")
+        for p in sorted(Path(site_dir).iterdir()) if Path(site_dir).exists() else []:
+            tout.add(str(p), arcname=f"{site_rel}/{p.name}", filter=skip)
+    return out.getvalue()
+
+
+def patch_sdl_template(tpl, out, repl, stamp, icon_bytes, payload):
+    """repl[0] = (eski_paket, yeni_paket). payload(eski_private_tar_baytları) -> yeni baytlar."""
+    with zipfile.ZipFile(tpl) as zin, zipfile.ZipFile(out, "w") as zout:
+        for info in zin.infolist():
+            n = info.filename
+            if n.startswith("META-INF/"):
+                continue                                          # eski imzayı at
+            data = zin.read(n)
+            if n == "AndroidManifest.xml":
+                data = patch_axml(data, repl)
+            elif n == "resources.arsc":
+                data = patch_arsc(data, repl, stamp)
+            elif n == "assets/private.tar":
+                data = payload(data)
+            elif icon_bytes and re.fullmatch(r"res/[^/]*(mipmap|drawable)[^/]*/icon\.png", n):
+                data = icon_bytes
+            zi = zipfile.ZipInfo(n, date_time=info.date_time)
+            zi.compress_type, zi.external_attr = info.compress_type, info.external_attr
+            zout.writestr(zi, data)
+
+
+def build_sdl_apk(c) -> Path:
+    flavor = SDL_MODES[c["mode"]]
+    meta = fetch_json(asset_url(c["repo"], "sdl", "sdl-meta.json"), "SDL şablon dizini")
+    fl = meta["flavors"].get(flavor)
+    if not fl:
+        die(f"'{flavor}' şablonu yayınlanmamış. GitHub'da Actions → sdl iş akışını çalıştırın.")
+    log("BETA: SDL şablonu kullanılıyor (deneysel)")
+    src = Path(c["script"]).resolve()
+    items = collect(src, c.get("add", []))
+    jdk = ensure_jdk(); sdk = ensure_sdk(jdk); je = jenv(jdk)
+    bt = sdk / "build-tools" / BT_VER
+    work = HOME / "work" / c["package"]; shutil.rmtree(work, ignore_errors=True); work.mkdir(parents=True)
+    tpl = download(asset_url(c["repo"], "sdl", fl["apk"]), HOME / "dl" / meta["build"] / fl["apk"])
+    site = work / "site"; site.mkdir()
+    extra = [x for x in c["libs"] if x not in SDL_BUILTIN]
+    if extra:
+        log(f"saf Python paketler ekleniyor (SDL şablonunda yalnızca bunlar çalışır): {extra}")
+        pip_fallback(extra, str(site), fl["archs"][0], fl["py"])
+    icon_bytes = None
+    if c.get("icon"):
+        make_icon(c["icon"], work / "icon.png"); icon_bytes = (work / "icon.png").read_bytes()
+    repl = [(fl["package"], c["package"]), (fl["name"], c["name"]), (fl["version"], c["version"])]
+    unsigned = work / "patched.apk"
+    patch_sdl_template(tpl, unsigned, repl, str(int(time.time())), icon_bytes,
+                       lambda old: build_private_tar(old, src, items, site))
+    ks = HOME / "debug.keystore"
+    if not ks.exists():
+        run([jdk / "bin" / f"keytool{EXE}", "-genkeypair", "-keystore", ks, "-storepass", "android",
+             "-keypass", "android", "-alias", "pyapk", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+             "-dname", "CN=py2apk"])
+    aligned = work / "aligned.apk"
+    run([bt / f"zipalign{EXE}", "-f", "-p", "4", unsigned, aligned])
+    out = Path(c.get("out") or src.parent / f"{re.sub(r'[^A-Za-z0-9_-]', '_', c['name'])}-{c['version']}.apk")
+    run([bt / f"apksigner{BAT}", "sign", "--ks", ks, "--ks-pass", "pass:android", "--key-pass", "pass:android",
+         "--out", out, aligned], env=je)
+    log(f"HAZIR: {out}  ({out.stat().st_size >> 20} MB)")
+    return out
 
 # --------------------------------------------------------------------------- komut PATH'te değilse otomatik düzelt
 def scripts_dir():
@@ -447,7 +659,7 @@ def build_cli(argv):
     ap.add_argument("--name"); ap.add_argument("--package"); ap.add_argument("--icon")
     ap.add_argument("--version", default="1.0")
     ap.add_argument("--abi", default="arm64-v8a", help="virgüllü: arm64-v8a,x86_64")
-    ap.add_argument("--mode", choices=["console", "webview"], help="verilmezse web çatısı algılanırsa webview")
+    ap.add_argument("--mode", choices=["console", "webview", "sdl"], help="verilmezse: kivy -> sdl, web çatısı -> webview")
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--pip", action="append", default=[], help="ek paket (tekrarlanabilir)")
     ap.add_argument("--repo", default=REPO); ap.add_argument("--out")
@@ -461,7 +673,8 @@ def build_cli(argv):
     cfg = dict(script=str(src), name=a.name or src.stem.replace("_", " ").title(),
                package=a.package or f"com.py2apk.{stem}", icon=a.icon, version=a.version, vcode=1,
                abis=[x.strip() for x in a.abi.split(",")], libs=list(dict.fromkeys([*detected, *map(norm, a.pip)])),
-               repo=a.repo, mode=a.mode or ("webview" if WEB_LIBS & set(detected) else "console"),
+               repo=a.repo, mode=a.mode or ("sdl" if {"kivy", "kivymd"} & set(detected)
+                               else "webview" if WEB_LIBS & set(detected) else "console"),
                port=a.port, out=a.out)
     if not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", cfg["package"]):
         sys.exit("Geçersiz paket adı (örn. com.ben.uygulama)")
@@ -586,8 +799,9 @@ def run_tui(argv):
                         with RadioSet(id="mode"):
                             yield RadioButton("Konsol: print() çıktısı ekranda", value=True, id="m_console")
                             yield RadioButton("Web arayüzü: Flask / FastAPI / NiceGUI + HTML (WebView)", id="m_web")
-                            yield RadioButton("Pygame / Oyun: BETA, henüz kullanılamaz", id="m_pygame", disabled=True)
-                            yield RadioButton("Kivy: BETA, henüz kullanılamaz", id="m_kivy", disabled=True)
+                            yield RadioButton("Kivy / SDL: BETA, tam ekran SDL uygulaması (Kivy, KivyMD)", id="m_sdl")
+                            yield RadioButton("Pygame: SDL hazır, Android wheel'i bekleniyor (henüz seçilemez)",
+                                              id="m_pygame", disabled=True)
                         with Horizontal(classes="row", id="portrow"):
                             yield Label("Sunucu portu")
                             yield Input(value="5000", id="port")
@@ -663,7 +877,7 @@ def run_tui(argv):
             self.query_one("#webhint").display = web
 
         def get_mode(self):
-            return "webview" if self.query_one("#mode", RadioSet).pressed_button.id == "m_web" else "console"
+            return {"m_web": "webview", "m_sdl": "sdl"}.get(self.query_one("#mode", RadioSet).pressed_button.id, "console")
 
         @on(RadioSet.Changed, "#mode")
         def _mode_changed(self, event):
@@ -689,7 +903,10 @@ def run_tui(argv):
                 self.detected = detect_libs(collect(p))
             except Exception as e:
                 self.detected = []; self.safe_log(f"tarama hatası: {e}")
-            if WEB_LIBS & set(self.detected):
+            if "kivy" in self.detected or "kivymd" in self.detected:
+                self.query_one("#m_sdl", RadioButton).value = True
+                self.safe_log("Kivy algılandı → uygulama türü 'Kivy / SDL (BETA)' seçildi")
+            elif WEB_LIBS & set(self.detected):
                 self.query_one("#m_web", RadioButton).value = True
                 self.safe_log("Web çatısı algılandı → uygulama türü 'Web arayüzü' seçildi")
             self.refresh_libs()
