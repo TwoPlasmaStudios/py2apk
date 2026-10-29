@@ -9,7 +9,7 @@ pip install py2apk
 py2apk
 ```
 
-> **Status: alpha.** Console apps are verified on a real phone. The Web UI app type is new. Pygame and Kivy are still in beta development and cannot be used yet.
+> **Status: alpha.** Console apps are verified on a real phone. The Web UI type is new. **Kivy / SDL is a beta**: the runtime is wired up but has not been tested on a device yet. Pygame is waiting for an Android wheel.
 
 ## How it works
 
@@ -37,10 +37,16 @@ The UI is a terminal app (built with [Textual](https://textual.textualize.io/)),
 |---|---|---|
 | **Console** | working | `print()` output is shown on screen. No `input()`. |
 | **Web UI** (Flask / FastAPI / NiceGUI + HTML) | supported, new | A local server runs on the phone and the UI is shown full screen in a WebView. |
-| **Pygame / games** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
-| **Kivy** | beta (in development) | Needs an SDL2 runtime. Not selectable yet. |
+| **Kivy / SDL** | **beta**, untested on device | Full-screen SDL app (Kivy, KivyMD) on an SDL2 `SDLActivity` with the embedded CPython. |
+| **Pygame** | waiting | The SDL runtime is ready, but no Android pygame wheel exists yet. Not selectable. |
 
-Tkinter, Qt (PyQt/PySide) and wxPython do not run on Android with this runtime. Use the Web UI type for a graphical interface.
+Tkinter, Qt (PyQt/PySide) and wxPython do not run on Android with this runtime. Use the Web UI or Kivy / SDL type for a graphical interface.
+
+### Kivy / SDL (beta)
+
+This mode packages your app on an `SDLActivity` instead of the text/WebView screen. The factory builds the activity glue (SDL2 2.32.10 Java sources plus a small `SDL_main` that starts CPython), and the Kivy, KivyMD and pyjnius Android wheels come from the community [kivy-mobile-wheels](https://github.com/ElliotGarbus/kivy-mobile-wheels) index. py2apk copies the SDL libraries bundled inside those wheels into the APK, because Android only loads native libraries from there.
+
+Things to know: the SDL Java glue must match the `libSDL2.so` version in the wheel (a mismatch gives a silent black screen), so both are pinned to 2.32.10 (Kivy 2.3.1). That index describes itself as a temporary bridge, so it can change or disappear. If Kivy does not show up as ready in the library table after the factory run, the wheel resolution failed and the reason is listed.
 
 ```python
 import os
@@ -75,12 +81,12 @@ The factory targets **174 libraries** (plus their dependencies). Each is resolve
 | Belge / medya | 7 | reportlab, fpdf2, pypdf, python-docx, python-pptx, mutagen, gtts |
 | Yapay zeka | 6 | openai, anthropic, ollama, huggingface-hub, tokenizers, google-generativeai |
 
-Libraries that need a window system or heavy native chains (pygame, kivy, pyglet, arcade, raylib, panda3d, polars, streamlit, gradio, ...) are only picked up if a ready Android wheel exists. Otherwise they are listed as failed with the reason. Anything not in the list is tried with `pip` (pure-Python packages work; C extensions need an Android wheel).
+Libraries that need a window system or heavy native chains (pygame, pyglet, arcade, raylib, panda3d, polars, streamlit, gradio, ...) are only picked up if a ready Android wheel exists. Kivy, KivyMD and pyjnius are resolved from the kivy-mobile-wheels index. Otherwise they are listed as failed with the reason. Anything not in the list is tried with `pip` (pure-Python packages work; C extensions need an Android wheel).
 
 ## Limits
 
 - Python 3.13 runtime, `arm64-v8a` (phones) and `x86_64` (emulator), Android 7.0+ (API 24).
-- No `input()`, no SDL windowing yet (pygame, kivy).
+- No `input()`. Pygame does not work yet (no Android wheel). Kivy / SDL is beta.
 - APKs are signed with a public debug key: fine for testing, not for Google Play.
 
 ## Run your own factory
@@ -101,7 +107,7 @@ Other variables: `PY2APK_HOME` (cache folder, default `~/.py2apk`), `PY2APK_PY` 
 
 ## Publishing to PyPI (maintainers)
 
-`.github/workflows/publish.yml` publishes with Trusted Publishing (no token) when you push a tag starting with `v`; the factory's `cp313` release does not trigger it. Register the publisher once on pypi.org (owner `TwoPlasmaStudios`, repository `py2apk`, workflow `publish.yml`, environment `pypi`), bump `version` in `pyproject.toml`, then `git tag v0.4.0 && git push origin v0.4.0`.
+`.github/workflows/publish.yml` publishes with Trusted Publishing (no token) when you push a tag starting with `v`; the factory's `cp313` release does not trigger it. Register the publisher once on pypi.org (owner `TwoPlasmaStudios`, repository `py2apk`, workflow `publish.yml`, environment `pypi`), bump `version` in `pyproject.toml`, then `git tag v0.5.0 && git push origin v0.5.0`.
 
 ## License
 
