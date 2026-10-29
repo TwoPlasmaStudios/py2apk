@@ -8,7 +8,7 @@ version = "2.5.0"
 description = "Turn a Python script into an Android APK from a terminal UI - no Docker, no compiling on your machine"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
 authors = [{ name = "TwoPlasmaStudios" }]
 keywords = ["android", "apk", "python", "packaging", "tui", "flask", "webview"]
