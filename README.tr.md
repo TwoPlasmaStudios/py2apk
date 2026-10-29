@@ -9,7 +9,7 @@ pip install py2apk
 py2apk
 ```
 
-> **Durum: alpha.** Konsol uygulaması gerçek telefonda denendi. Web arayüzü türü yeni. Pygame ve Kivy hâlâ beta geliştirme aşamasında, henüz kullanılamaz.
+> **Durum: alpha.** Konsol uygulaması gerçek telefonda denendi. Web arayüzü türü yeni. **Kivy / SDL beta**: çalışma zamanı bağlandı ama henüz cihazda denenmedi. Pygame bir Android wheel'i bekliyor.
 
 ## Nasıl çalışır?
 
@@ -37,10 +37,16 @@ Arayüz bir terminal uygulamasıdır ([Textual](https://textual.textualize.io/) 
 |---|---|---|
 | **Konsol** | çalışıyor | `print()` çıktısı ekranda görünür. `input()` yok. |
 | **Web arayüzü** (Flask / FastAPI / NiceGUI + HTML) | destekleniyor, yeni | Telefonda yerel sunucu açılır, arayüz tam ekran WebView'da görünür. |
-| **Pygame / Oyun** | beta (geliştiriliyor) | SDL2 altyapısı gerekir, henüz seçilemez. |
-| **Kivy** | beta (geliştiriliyor) | SDL2 altyapısı gerekir, henüz seçilemez. |
+| **Kivy / SDL** | **beta**, cihazda denenmedi | SDL2 `SDLActivity` üzerinde gömülü CPython ile tam ekran uygulama (Kivy, KivyMD). |
+| **Pygame** | bekliyor | SDL çalışma zamanı hazır ama henüz Android pygame wheel'i yok. Seçilemez. |
 
-Tkinter, Qt (PyQt/PySide) ve wxPython bu çalışma zamanıyla Android'de çalışmaz. Grafik arayüz için **Web arayüzü** türünü kullan.
+Tkinter, Qt (PyQt/PySide) ve wxPython bu çalışma zamanıyla Android'de çalışmaz. Grafik arayüz için **Web arayüzü** ya da **Kivy / SDL** türünü kullan.
+
+### Kivy / SDL (beta)
+
+Bu mod uygulamanı metin/WebView ekranı yerine bir `SDLActivity` üzerinde paketler. Fabrika etkinlik yapıştırıcısını (SDL2 2.32.10 Java kaynakları ve CPython'u başlatan küçük bir `SDL_main`) derler. Kivy, KivyMD ve pyjnius Android wheel'leri topluluğun [kivy-mobile-wheels](https://github.com/ElliotGarbus/kivy-mobile-wheels) dizininden gelir. Android yerel kütüphaneleri yalnızca APK'dan yükleyebildiği için py2apk, bu wheel'lerin içine gömülü SDL kütüphanelerini APK'ya kopyalar.
+
+Bilinmesi gerekenler: SDL Java yapıştırıcısı, wheel'deki `libSDL2.so` sürümüyle eşleşmek zorundadır (uyuşmazlıkta sessizce siyah ekran verir), bu yüzden ikisi de 2.32.10'a (Kivy 2.3.1) sabitlendi. O dizin kendini geçici bir köprü olarak tanımlıyor, yani değişebilir ya da kaybolabilir. Fabrika çalıştıktan sonra Kivy kütüphane tablosunda hazır görünmüyorsa wheel çözümlemesi başarısız olmuştur, nedeni tabloda yazar.
 
 ```python
 import os
@@ -75,12 +81,12 @@ Fabrika **174 kütüphaneyi** (ve bağımlılıklarını) hedefler. Her biri haz
 | Belge / medya | 7 | reportlab, fpdf2, pypdf, python-docx, python-pptx, mutagen, gtts |
 | Yapay zeka | 6 | openai, anthropic, ollama, huggingface-hub, tokenizers, google-generativeai |
 
-Pencere sistemi ya da ağır yerel zincir gerektirenler (pygame, kivy, pyglet, arcade, raylib, panda3d, polars, streamlit, gradio, ...) yalnızca hazır bir Android wheel varsa alınır. Yoksa nedeniyle birlikte "başarısız" yazılır. Listede olmayan paketler `pip` ile denenir (saf Python paketler çalışır, C eklentileri için Android wheel gerekir).
+Pencere sistemi ya da ağır yerel zincir gerektirenler (pygame, pyglet, arcade, raylib, panda3d, polars, streamlit, gradio, ...) yalnızca hazır bir Android wheel varsa alınır. Kivy, KivyMD ve pyjnius kivy-mobile-wheels dizininden çözülür. Yoksa nedeniyle birlikte "başarısız" yazılır. Listede olmayan paketler `pip` ile denenir (saf Python paketler çalışır, C eklentileri için Android wheel gerekir).
 
 ## Sınırlar
 
 - Python 3.13 runtime, `arm64-v8a` (telefon) ve `x86_64` (emülatör), Android 7.0+ (API 24).
-- `input()` yok, SDL pencere desteği henüz yok (pygame, kivy).
+- `input()` yok. Pygame henüz çalışmaz (Android wheel'i yok). Kivy / SDL beta.
 - APK herkese açık bir debug anahtarıyla imzalanır: test için uygun, Google Play için değil.
 
 ## Kendi fabrikanı çalıştır
@@ -101,7 +107,7 @@ Diğer değişkenler: `PY2APK_HOME` (önbellek klasörü, varsayılan `~/.py2apk
 
 ## PyPI'a yayın (bakımcılar)
 
-`.github/workflows/publish.yml`, `v` ile başlayan bir etiket gönderince Trusted Publishing ile (token'sız) yayınlar; fabrikanın `cp313` release'i bunu tetiklemez. Publisher'ı pypi.org'da bir kez kaydet (owner `TwoPlasmaStudios`, repository `py2apk`, workflow `publish.yml`, environment `pypi`), `pyproject.toml`'da `version`'ı artır, sonra `git tag v0.4.0 && git push origin v0.4.0`.
+`.github/workflows/publish.yml`, `v` ile başlayan bir etiket gönderince Trusted Publishing ile (token'sız) yayınlar; fabrikanın `cp313` release'i bunu tetiklemez. Publisher'ı pypi.org'da bir kez kaydet (owner `TwoPlasmaStudios`, repository `py2apk`, workflow `publish.yml`, environment `pypi`), `pyproject.toml`'da `version`'ı artır, sonra `git tag v0.5.0 && git push origin v0.5.0`.
 
 ## Lisans
 
